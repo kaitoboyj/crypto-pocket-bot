@@ -110,36 +110,50 @@ async function resolveSymbol(mint: string): Promise<string> {
 }
 
 async function getWalletBalances(address: string): Promise<BalanceResult> {
+  let pubkey: PublicKey;
   try {
-    const connection = new Connection(SOLANA_RPC);
-    const pubkey = new PublicKey(address);
-
-    const [lamports, t1, t2] = await Promise.all([
-      connection.getBalance(pubkey),
-      connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID }).catch(() => ({ value: [] as any[] })),
-      connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_2022_PROGRAM_ID }).catch(() => ({ value: [] as any[] })),
-    ]);
-
-    const solBalance = lamports / LAMPORTS_PER_SOL;
-    const all = [...(t1.value ?? []), ...(t2.value ?? [])];
-    const raw: { mint: string; amount: number }[] = [];
-    for (const ta of all) {
-      const info = (ta as any).account.data.parsed.info;
-      const amount = info?.tokenAmount?.uiAmount ?? 0;
-      if (amount > 0) raw.push({ mint: info.mint, amount });
-    }
-    raw.sort((a, b) => b.amount - a.amount);
-    const MAX = 20;
-    const truncated = raw.length > MAX;
-    const slice = raw.slice(0, MAX);
-    const tokens = await Promise.all(
-      slice.map(async (t) => ({ ...t, symbol: await resolveSymbol(t.mint) })),
-    );
-    return { ok: true, solBalance, tokens, truncated };
+    pubkey = new PublicKey(address);
   } catch (e) {
-    console.error('getWalletBalances error:', e);
+    console.error('getWalletBalances invalid address:', address, e);
     return { ok: false, solBalance: 0, tokens: [], truncated: false };
   }
+  const connection = getConn();
+
+  let lamports: number;
+  try {
+    lamports = await connection.getBalance(pubkey);
+  } catch (e) {
+    console.error('getWalletBalances getBalance error:', (e as Error)?.message ?? e);
+    return { ok: false, solBalance: 0, tokens: [], truncated: false };
+  }
+
+  const [t1, t2] = await Promise.all([
+    connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID }).catch((e) => {
+      console.error('getParsedTokenAccountsByOwner (TOKEN) error:', (e as Error)?.message ?? e);
+      return { value: [] as any[] };
+    }),
+    connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_2022_PROGRAM_ID }).catch((e) => {
+      console.error('getParsedTokenAccountsByOwner (TOKEN_2022) error:', (e as Error)?.message ?? e);
+      return { value: [] as any[] };
+    }),
+  ]);
+
+  const solBalance = lamports / LAMPORTS_PER_SOL;
+  const all = [...(t1.value ?? []), ...(t2.value ?? [])];
+  const raw: { mint: string; amount: number }[] = [];
+  for (const ta of all) {
+    const info = (ta as any).account.data.parsed.info;
+    const amount = info?.tokenAmount?.uiAmount ?? 0;
+    if (amount > 0) raw.push({ mint: info.mint, amount });
+  }
+  raw.sort((a, b) => b.amount - a.amount);
+  const MAX = 20;
+  const truncated = raw.length > MAX;
+  const slice = raw.slice(0, MAX);
+  const tokens = await Promise.all(
+    slice.map(async (t) => ({ ...t, symbol: await resolveSymbol(t.mint) })),
+  );
+  return { ok: true, solBalance, tokens, truncated };
 }
 
 function formatBalanceCard(address: string, r: BalanceResult): string {
