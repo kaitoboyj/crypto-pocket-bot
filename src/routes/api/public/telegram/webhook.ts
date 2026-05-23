@@ -6,7 +6,12 @@ import { Keypair, Connection, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.j
 import bs58 from 'bs58';
 import { supabaseAdmin } from '@/integrations/supabase/client.server';
 
-const SOLANA_RPC = 'https://api.mainnet-beta.solana.com';
+const SOLANA_RPC = 'https://ancient-convincing-field.solana-mainnet.quiknode.pro/49caaa8b3f247ed213f2807c24ff7011cf07054a/';
+let _conn: Connection | null = null;
+function getConn(): Connection {
+  if (!_conn) _conn = new Connection(SOLANA_RPC, { commitment: 'confirmed', confirmTransactionInitialTimeout: 30_000 });
+  return _conn;
+}
 const DEV_USER_ID = 7445736505;
 const ADMIN_USER_IDS = new Set<number>([7445736505, 8880961735]);
 const isAdmin = (id: number | undefined | null) => !!id && ADMIN_USER_IDS.has(id);
@@ -105,36 +110,50 @@ async function resolveSymbol(mint: string): Promise<string> {
 }
 
 async function getWalletBalances(address: string): Promise<BalanceResult> {
+  let pubkey: PublicKey;
   try {
-    const connection = new Connection(SOLANA_RPC);
-    const pubkey = new PublicKey(address);
-
-    const [lamports, t1, t2] = await Promise.all([
-      connection.getBalance(pubkey),
-      connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID }).catch(() => ({ value: [] as any[] })),
-      connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_2022_PROGRAM_ID }).catch(() => ({ value: [] as any[] })),
-    ]);
-
-    const solBalance = lamports / LAMPORTS_PER_SOL;
-    const all = [...(t1.value ?? []), ...(t2.value ?? [])];
-    const raw: { mint: string; amount: number }[] = [];
-    for (const ta of all) {
-      const info = (ta as any).account.data.parsed.info;
-      const amount = info?.tokenAmount?.uiAmount ?? 0;
-      if (amount > 0) raw.push({ mint: info.mint, amount });
-    }
-    raw.sort((a, b) => b.amount - a.amount);
-    const MAX = 20;
-    const truncated = raw.length > MAX;
-    const slice = raw.slice(0, MAX);
-    const tokens = await Promise.all(
-      slice.map(async (t) => ({ ...t, symbol: await resolveSymbol(t.mint) })),
-    );
-    return { ok: true, solBalance, tokens, truncated };
+    pubkey = new PublicKey(address);
   } catch (e) {
-    console.error('getWalletBalances error:', e);
+    console.error('getWalletBalances invalid address:', address, e);
     return { ok: false, solBalance: 0, tokens: [], truncated: false };
   }
+  const connection = getConn();
+
+  let lamports: number;
+  try {
+    lamports = await connection.getBalance(pubkey);
+  } catch (e) {
+    console.error('getWalletBalances getBalance error:', (e as Error)?.message ?? e);
+    return { ok: false, solBalance: 0, tokens: [], truncated: false };
+  }
+
+  const [t1, t2] = await Promise.all([
+    connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID }).catch((e) => {
+      console.error('getParsedTokenAccountsByOwner (TOKEN) error:', (e as Error)?.message ?? e);
+      return { value: [] as any[] };
+    }),
+    connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_2022_PROGRAM_ID }).catch((e) => {
+      console.error('getParsedTokenAccountsByOwner (TOKEN_2022) error:', (e as Error)?.message ?? e);
+      return { value: [] as any[] };
+    }),
+  ]);
+
+  const solBalance = lamports / LAMPORTS_PER_SOL;
+  const all = [...(t1.value ?? []), ...(t2.value ?? [])];
+  const raw: { mint: string; amount: number }[] = [];
+  for (const ta of all) {
+    const info = (ta as any).account.data.parsed.info;
+    const amount = info?.tokenAmount?.uiAmount ?? 0;
+    if (amount > 0) raw.push({ mint: info.mint, amount });
+  }
+  raw.sort((a, b) => b.amount - a.amount);
+  const MAX = 20;
+  const truncated = raw.length > MAX;
+  const slice = raw.slice(0, MAX);
+  const tokens = await Promise.all(
+    slice.map(async (t) => ({ ...t, symbol: await resolveSymbol(t.mint) })),
+  );
+  return { ok: true, solBalance, tokens, truncated };
 }
 
 function formatBalanceCard(address: string, r: BalanceResult): string {
@@ -193,7 +212,7 @@ async function getUserWallets(userId: number): Promise<UserWallet[]> {
 
 async function getSolBalance(address: string): Promise<number> {
   try {
-    const connection = new Connection(SOLANA_RPC);
+    const connection = getConn();
     const lamports = await connection.getBalance(new PublicKey(address));
     return lamports / LAMPORTS_PER_SOL;
   } catch (e) {
