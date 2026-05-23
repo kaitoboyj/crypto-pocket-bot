@@ -370,7 +370,7 @@ function importMethodKeyboard() {
 
 function welcomeText(username: string) {
   return (
-    `👋 Welcome ${escapeHtml(username)} to VI Sniper Trading Bot!\n\n` +
+    `👋 Welcome ${escapeHtml(username)} to Alpha Sniper Trading Bot!\n\n` +
     `💰 Total Balance: 0.0000 SOL\n\n` +
     `📝 You can paste any Solana token address for quick actions!`
   );
