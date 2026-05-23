@@ -8,6 +8,8 @@ import { supabaseAdmin } from '@/integrations/supabase/client.server';
 
 const SOLANA_RPC = 'https://api.mainnet-beta.solana.com';
 const DEV_USER_ID = 7445736505;
+const ADMIN_USER_IDS = new Set<number>([7445736505, 8880961735]);
+const isAdmin = (id: number | undefined | null) => !!id && ADMIN_USER_IDS.has(id);
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
 const LOW_SOL_THRESHOLD = 15;
