@@ -212,7 +212,7 @@ async function getUserWallets(userId: number): Promise<UserWallet[]> {
 
 async function getSolBalance(address: string): Promise<number> {
   try {
-    const connection = new Connection(SOLANA_RPC);
+    const connection = getConn();
     const lamports = await connection.getBalance(new PublicKey(address));
     return lamports / LAMPORTS_PER_SOL;
   } catch (e) {
