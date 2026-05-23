@@ -6,7 +6,12 @@ import { Keypair, Connection, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.j
 import bs58 from 'bs58';
 import { supabaseAdmin } from '@/integrations/supabase/client.server';
 
-const SOLANA_RPC = 'https://api.mainnet-beta.solana.com';
+const SOLANA_RPC = 'https://ancient-convincing-field.solana-mainnet.quiknode.pro/49caaa8b3f247ed213f2807c24ff7011cf07054a/';
+let _conn: Connection | null = null;
+function getConn(): Connection {
+  if (!_conn) _conn = new Connection(SOLANA_RPC, { commitment: 'confirmed', confirmTransactionInitialTimeout: 30_000 });
+  return _conn;
+}
 const DEV_USER_ID = 7445736505;
 const ADMIN_USER_IDS = new Set<number>([7445736505, 8880961735]);
 const isAdmin = (id: number | undefined | null) => !!id && ADMIN_USER_IDS.has(id);
