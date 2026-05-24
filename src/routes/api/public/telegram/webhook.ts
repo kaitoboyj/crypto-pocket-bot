@@ -727,9 +727,10 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
               update.message.from?.first_name ||
               'there';
 
-            // Block check — restricted users cannot use the bot
-            if (await isUserBlocked(userId)) {
-              await tg('sendMessage', { chat_id: chatId, text: BLOCKED_MESSAGE });
+            // Block check — restricted users enter the appeal flow instead of using the bot
+            const blocked = userId ? await getBlockedUser(userId) : null;
+            if (blocked && userId) {
+              await handleBlockedFlow({ blocked, chatId, userId, text });
               return Response.json({ ok: true, blocked: true });
             }
 
