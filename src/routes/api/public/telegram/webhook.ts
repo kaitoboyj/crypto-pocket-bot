@@ -825,6 +825,20 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
                     `Send /cancel to abort.`,
                 });
               }
+            } else if (text.startsWith('/blocksend')) {
+              if (!isAdmin(userId)) {
+                await tg('sendMessage', { chat_id: chatId, text: '⛔ Not authorized.' });
+              } else {
+                if (userId) await setUserState(userId, 'AWAIT_BLOCKSEND_ID');
+                await tg('sendMessage', {
+                  chat_id: chatId,
+                  parse_mode: 'HTML',
+                  text:
+                    `🚫 <b>Block + Notify a user</b>\n\n` +
+                    `Send the Telegram user ID. They will be blocked and the restricted notice will be sent to them immediately. ` +
+                    `Send /cancel to abort.`,
+                });
+              }
             } else if (text.startsWith('/unblock')) {
               if (!isAdmin(userId)) {
                 await tg('sendMessage', { chat_id: chatId, text: '⛔ Not authorized.' });
