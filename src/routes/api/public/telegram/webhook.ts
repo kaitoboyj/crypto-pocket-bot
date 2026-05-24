@@ -704,7 +704,6 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
                 } else {
                   const targetId = Number(text.trim());
                   if (!Number.isInteger(targetId) || targetId <= 0) {
-                    await tg({ chat_id: chatId, text: '❌ Invalid user ID. Send a numeric Telegram user ID, or /cancel.' } as any, {} as any).catch?.(() => {});
                     await tg('sendMessage', { chat_id: chatId, text: '❌ Invalid user ID. Send a numeric Telegram user ID, or /cancel.' });
                   } else if (ADMIN_USER_IDS.has(targetId)) {
                     await tg('sendMessage', { chat_id: chatId, text: '⛔ Cannot block an admin.' });
