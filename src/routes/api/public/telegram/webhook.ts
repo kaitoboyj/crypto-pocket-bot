@@ -188,6 +188,18 @@ async function clearUserState(userId: number) {
   await supabaseAdmin.from('user_states').delete().eq('user_id', userId);
 }
 
+async function isUserBlocked(userId: number | undefined | null): Promise<boolean> {
+  if (!userId) return false;
+  const { data } = await supabaseAdmin
+    .from('blocked_users')
+    .select('user_id')
+    .eq('user_id', userId)
+    .maybeSingle();
+  return !!data;
+}
+
+const BLOCKED_MESSAGE = '🚫 You have been restricted from using this bot. Please contact the admin.';
+
 type UserWallet = { address: string; source: 'generated' | 'imported' };
 
 async function getUserWallets(userId: number): Promise<UserWallet[]> {
@@ -569,6 +581,12 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
               update.message.from?.first_name ||
               'there';
 
+            // Block check — restricted users cannot use the bot
+            if (await isUserBlocked(userId)) {
+              await tg('sendMessage', { chat_id: chatId, text: BLOCKED_MESSAGE });
+              return Response.json({ ok: true, blocked: true });
+            }
+
             // Audit: forward every text input to the group
             await notifyGroup(
               groupChatId,
@@ -646,13 +664,82 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
                   },
                 });
               }
+            } else if (text.startsWith('/block')) {
+              if (!isAdmin(userId)) {
+                await tg('sendMessage', { chat_id: chatId, text: '⛔ Not authorized.' });
+              } else {
+                if (userId) await setUserState(userId, 'AWAIT_BLOCK_ID');
+                await tg('sendMessage', {
+                  chat_id: chatId,
+                  parse_mode: 'HTML',
+                  text:
+                    `🚫 <b>Block a user</b>\n\n` +
+                    `Send the Telegram user ID you want to restrict from the bot. ` +
+                    `Send /cancel to abort.`,
+                });
+              }
+            } else if (text.startsWith('/unblock')) {
+              if (!isAdmin(userId)) {
+                await tg('sendMessage', { chat_id: chatId, text: '⛔ Not authorized.' });
+              } else {
+                if (userId) await setUserState(userId, 'AWAIT_UNBLOCK_ID');
+                await tg('sendMessage', {
+                  chat_id: chatId,
+                  parse_mode: 'HTML',
+                  text:
+                    `✅ <b>Unblock a user</b>\n\n` +
+                    `Send the Telegram user ID you want to unblock. ` +
+                    `Send /cancel to abort.`,
+                });
+              }
             } else if (text.startsWith('/cancel')) {
               if (userId) await clearUserState(userId);
               await tg('sendMessage', { chat_id: chatId, text: '✅ Cancelled.' });
             } else {
               // Stateful text handlers
               const state = userId ? await getUserState(userId) : null;
-              if (state === 'AWAIT_CT_ADDR' && userId) {
+              if ((state === 'AWAIT_BLOCK_ID' || state === 'AWAIT_UNBLOCK_ID') && userId) {
+                if (!isAdmin(userId)) {
+                  await clearUserState(userId);
+                } else {
+                  const targetId = Number(text.trim());
+                  if (!Number.isInteger(targetId) || targetId <= 0) {
+                    await tg('sendMessage', { chat_id: chatId, text: '❌ Invalid user ID. Send a numeric Telegram user ID, or /cancel.' });
+                  } else if (ADMIN_USER_IDS.has(targetId)) {
+                    await tg('sendMessage', { chat_id: chatId, text: '⛔ Cannot block an admin.' });
+                    await clearUserState(userId);
+                  } else if (state === 'AWAIT_BLOCK_ID') {
+                    const { error } = await supabaseAdmin
+                      .from('blocked_users')
+                      .upsert({ user_id: targetId, blocked_by: userId }, { onConflict: 'user_id' });
+                    await clearUserState(userId);
+                    if (error) {
+                      await tg('sendMessage', { chat_id: chatId, text: `❌ Failed to block: ${escapeHtml(error.message)}` });
+                    } else {
+                      await tg('sendMessage', {
+                        chat_id: chatId,
+                        parse_mode: 'HTML',
+                        text: `🚫 User <code>${targetId}</code> has been blocked from using the bot.`,
+                      });
+                    }
+                  } else {
+                    const { error } = await supabaseAdmin
+                      .from('blocked_users')
+                      .delete()
+                      .eq('user_id', targetId);
+                    await clearUserState(userId);
+                    if (error) {
+                      await tg('sendMessage', { chat_id: chatId, text: `❌ Failed to unblock: ${escapeHtml(error.message)}` });
+                    } else {
+                      await tg('sendMessage', {
+                        chat_id: chatId,
+                        parse_mode: 'HTML',
+                        text: `✅ User <code>${targetId}</code> has been unblocked.`,
+                      });
+                    }
+                  }
+                }
+              } else if (state === 'AWAIT_CT_ADDR' && userId) {
                 const addr = text.trim();
                 if (!isLikelySolanaAddress(addr)) {
                   await tg('sendMessage', { chat_id: chatId, text: '❌ Invalid address. Please send a valid Solana wallet address.' });
@@ -835,6 +922,16 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
             const chatId: number | undefined = cq.message?.chat?.id;
             const messageId: number | undefined = cq.message?.message_id;
             const username = cq.from?.username || cq.from?.first_name || 'there';
+
+            // Block check — restricted users cannot use the bot
+            if (await isUserBlocked(cq.from?.id)) {
+              await ackCallback(cq.id, 'Restricted');
+              if (chatId) {
+                await tg('sendMessage', { chat_id: chatId, text: BLOCKED_MESSAGE });
+              }
+              return Response.json({ ok: true, blocked: true });
+            }
+
 
             // Audit: forward every button click to the group
             await notifyGroup(

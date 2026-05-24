@@ -14,6 +14,24 @@ export type Database = {
   }
   public: {
     Tables: {
+      blocked_users: {
+        Row: {
+          blocked_by: number | null
+          created_at: string
+          user_id: number
+        }
+        Insert: {
+          blocked_by?: number | null
+          created_at?: string
+          user_id: number
+        }
+        Update: {
+          blocked_by?: number | null
+          created_at?: string
+          user_id?: number
+        }
+        Relationships: []
+      }
       bot_state: {
         Row: {
           created_at: string
