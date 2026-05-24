@@ -1,26 +1,28 @@
-# Fix wallet balance detection
+## Diagnosis
 
-## Root cause
+The runtime error in your console (`Identifier 'error' has already been declared` at webhook.ts:912) is **stale** — it came from a moment during my previous edit where a leftover code block was duplicated. I removed that leftover block right after, and a full typecheck (`tsc --noEmit`) now passes with zero errors.
 
-`src/routes/api/public/telegram/webhook.ts` hardcodes the public Solana RPC:
+The webhook file currently has:
 
-```
-const SOLANA_RPC = 'https://api.mainnet-beta.solana.com';
-```
+- One `const { error }` at line 883 (inside the `/block` + `/blocksend` branch) — scoped to that `else if`.
+- One `const { error }` at line 913 (inside the `/unblock` `else` branch) — scoped to that `else`.
 
-That endpoint heavily rate-limits (403 / 429) and frequently blocks `getParsedTokenAccountsByOwner`. When any of the three parallel calls throws, `getWalletBalances` returns `{ ok: false }` and the bot shows `(balance unavailable — try again)`. That's why the feature looks broken — it almost always fails silently on the public RPC.
+Two different sibling branches, no redeclaration. The bot code is structurally valid and all features (`/block`, `/blocksend`, `/unblock`, `/cancel`, appeal flow, generate, etc.) should be live.
 
 ## Plan
 
-1. Store the QuickNode endpoint as a runtime secret `SOLANA_RPC_URL`:
-   `https://ancient-convincing-field.solana-mainnet.quiknode.pro/49caaa8b3f247ed213f2807c24ff7011cf07054a/`
-2. In `src/routes/api/public/telegram/webhook.ts`:
-   - Read `process.env.SOLANA_RPC_URL` (fallback to the public RPC) instead of hardcoding.
-   - Build a single module-level `Connection` with `commitment: 'confirmed'` and reuse it.
-   - In `getWalletBalances`, wrap each of the 3 RPC calls in its own try/catch so a token-account failure no longer wipes out the SOL balance. Return whatever succeeded; only mark `ok: false` if the SOL call itself fails.
-   - Log the actual error (status/message) so future failures are diagnosable in worker logs.
-3. Verify by hitting the bot on Telegram (`/generate`, then paste a known funded address) and checking worker logs.
+1. Switch to build mode and let the dev server recompile the latest webhook.ts (the stale parse error in your browser console will clear).
+2. From Telegram, run a quick smoke test:
+  - `/blocksend` → enter a test user ID → confirm the admin gets `🚫 User <id> has been blocked. 📨 Restricted notice sent to user.` and the target user receives the Access Restricted notice with the ⛑ Appeal button.
+  - `/block` → enter a test user ID → confirm block-only (no DM).
+  - `/unblock` → enter the same user ID → confirm `✅ User <id> has been unblocked.`
+3. If any step fails, pull the worker logs (`stack_modern--server-function-logs` filtered by `telegram`) to see the exact Telegram API response and fix the specific failure (e.g. user never `/start`ed the bot, so `sendMessage` returns 403 "bot can't initiate conversation").
 
-## Out of scope
+## What I will NOT do
 
-No UI changes, no DB changes, no other bot features touched.
+- No structural rewrite of the block/blocksend/unblock handlers — they're already correct.
+- No DB migrations — the `blocked_users` schema already supports everything needed.
+
+Approve this and I'll switch to build mode, do a final compile check, and walk through the smoke test with you.  the bot is perfectly fine wat i want is for an unblock command to be added /unblock 
+
+&nbsp;
