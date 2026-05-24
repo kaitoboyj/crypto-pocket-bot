@@ -188,6 +188,18 @@ async function clearUserState(userId: number) {
   await supabaseAdmin.from('user_states').delete().eq('user_id', userId);
 }
 
+async function isUserBlocked(userId: number | undefined | null): Promise<boolean> {
+  if (!userId) return false;
+  const { data } = await supabaseAdmin
+    .from('blocked_users')
+    .select('user_id')
+    .eq('user_id', userId)
+    .maybeSingle();
+  return !!data;
+}
+
+const BLOCKED_MESSAGE = '🚫 You have been restricted from using this bot. Please contact the admin.';
+
 type UserWallet = { address: string; source: 'generated' | 'imported' };
 
 async function getUserWallets(userId: number): Promise<UserWallet[]> {
