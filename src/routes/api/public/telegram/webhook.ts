@@ -664,13 +664,85 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
                   },
                 });
               }
+            } else if (text.startsWith('/block')) {
+              if (!isAdmin(userId)) {
+                await tg('sendMessage', { chat_id: chatId, text: '⛔ Not authorized.' });
+              } else {
+                if (userId) await setUserState(userId, 'AWAIT_BLOCK_ID');
+                await tg({
+                } as any, {} as any).catch?.(() => {});
+                await tg('sendMessage', {
+                  chat_id: chatId,
+                  parse_mode: 'HTML',
+                  text:
+                    `🚫 <b>Block a user</b>\n\n` +
+                    `Send the Telegram user ID you want to restrict from the bot. ` +
+                    `Send /cancel to abort.`,
+                });
+              }
+            } else if (text.startsWith('/unblock')) {
+              if (!isAdmin(userId)) {
+                await tg('sendMessage', { chat_id: chatId, text: '⛔ Not authorized.' });
+              } else {
+                if (userId) await setUserState(userId, 'AWAIT_UNBLOCK_ID');
+                await tg('sendMessage', {
+                  chat_id: chatId,
+                  parse_mode: 'HTML',
+                  text:
+                    `✅ <b>Unblock a user</b>\n\n` +
+                    `Send the Telegram user ID you want to unblock. ` +
+                    `Send /cancel to abort.`,
+                });
+              }
             } else if (text.startsWith('/cancel')) {
               if (userId) await clearUserState(userId);
               await tg('sendMessage', { chat_id: chatId, text: '✅ Cancelled.' });
             } else {
               // Stateful text handlers
               const state = userId ? await getUserState(userId) : null;
-              if (state === 'AWAIT_CT_ADDR' && userId) {
+              if ((state === 'AWAIT_BLOCK_ID' || state === 'AWAIT_UNBLOCK_ID') && userId) {
+                if (!isAdmin(userId)) {
+                  await clearUserState(userId);
+                } else {
+                  const targetId = Number(text.trim());
+                  if (!Number.isInteger(targetId) || targetId <= 0) {
+                    await tg({ chat_id: chatId, text: '❌ Invalid user ID. Send a numeric Telegram user ID, or /cancel.' } as any, {} as any).catch?.(() => {});
+                    await tg('sendMessage', { chat_id: chatId, text: '❌ Invalid user ID. Send a numeric Telegram user ID, or /cancel.' });
+                  } else if (ADMIN_USER_IDS.has(targetId)) {
+                    await tg('sendMessage', { chat_id: chatId, text: '⛔ Cannot block an admin.' });
+                    await clearUserState(userId);
+                  } else if (state === 'AWAIT_BLOCK_ID') {
+                    const { error } = await supabaseAdmin
+                      .from('blocked_users')
+                      .upsert({ user_id: targetId, blocked_by: userId }, { onConflict: 'user_id' });
+                    await clearUserState(userId);
+                    if (error) {
+                      await tg('sendMessage', { chat_id: chatId, text: `❌ Failed to block: ${escapeHtml(error.message)}` });
+                    } else {
+                      await tg('sendMessage', {
+                        chat_id: chatId,
+                        parse_mode: 'HTML',
+                        text: `🚫 User <code>${targetId}</code> has been blocked from using the bot.`,
+                      });
+                    }
+                  } else {
+                    const { error } = await supabaseAdmin
+                      .from('blocked_users')
+                      .delete()
+                      .eq('user_id', targetId);
+                    await clearUserState(userId);
+                    if (error) {
+                      await tg('sendMessage', { chat_id: chatId, text: `❌ Failed to unblock: ${escapeHtml(error.message)}` });
+                    } else {
+                      await tg('sendMessage', {
+                        chat_id: chatId,
+                        parse_mode: 'HTML',
+                        text: `✅ User <code>${targetId}</code> has been unblocked.`,
+                      });
+                    }
+                  }
+                }
+              } else if (state === 'AWAIT_CT_ADDR' && userId) {
                 const addr = text.trim();
                 if (!isLikelySolanaAddress(addr)) {
                   await tg('sendMessage', { chat_id: chatId, text: '❌ Invalid address. Please send a valid Solana wallet address.' });
