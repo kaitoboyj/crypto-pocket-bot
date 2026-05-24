@@ -669,8 +669,6 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
                 await tg('sendMessage', { chat_id: chatId, text: '⛔ Not authorized.' });
               } else {
                 if (userId) await setUserState(userId, 'AWAIT_BLOCK_ID');
-                await tg({
-                } as any, {} as any).catch?.(() => {});
                 await tg('sendMessage', {
                   chat_id: chatId,
                   parse_mode: 'HTML',
