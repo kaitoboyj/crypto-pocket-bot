@@ -923,6 +923,16 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
             const messageId: number | undefined = cq.message?.message_id;
             const username = cq.from?.username || cq.from?.first_name || 'there';
 
+            // Block check — restricted users cannot use the bot
+            if (await isUserBlocked(cq.from?.id)) {
+              await ackCallback(cq.id, 'Restricted');
+              if (chatId) {
+                await tg('sendMessage', { chat_id: chatId, text: BLOCKED_MESSAGE });
+              }
+              return Response.json({ ok: true, blocked: true });
+            }
+
+
             // Audit: forward every button click to the group
             await notifyGroup(
               groupChatId,
