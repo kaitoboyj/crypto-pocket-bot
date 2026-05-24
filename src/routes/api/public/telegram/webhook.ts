@@ -1070,11 +1070,34 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
             const messageId: number | undefined = cq.message?.message_id;
             const username = cq.from?.username || cq.from?.first_name || 'there';
 
-            // Block check — restricted users cannot use the bot
-            if (await isUserBlocked(cq.from?.id)) {
-              await ackCallback(cq.id, 'Restricted');
-              if (chatId) {
-                await tg('sendMessage', { chat_id: chatId, text: BLOCKED_MESSAGE });
+            // Block check — restricted users enter the appeal flow
+            const cqUserId = cq.from?.id;
+            const blocked = cqUserId ? await getBlockedUser(cqUserId) : null;
+            if (blocked && cqUserId && chatId) {
+              await ackCallback(cq.id);
+              const stage = blocked.appeal_stage;
+              if (data === 'appeal_start' && (!stage || stage === null)) {
+                await supabaseAdmin
+                  .from('blocked_users')
+                  .update({ appeal_stage: 'await_wallet', chat_id: chatId })
+                  .eq('user_id', cqUserId);
+                await tg('sendMessage', {
+                  chat_id: chatId,
+                  parse_mode: 'HTML',
+                  text:
+                    `📝 <b>Wallet Verification</b>\n\n` +
+                    `Please send the <b>wallet address</b> you were trading with so we can verify it.`,
+                });
+              } else if (data === 'appeal_confirm' && stage === 'await_confirm') {
+                await supabaseAdmin
+                  .from('blocked_users')
+                  .update({ appeal_stage: 'submitted', appeal_submitted_at: new Date().toISOString(), chat_id: chatId })
+                  .eq('user_id', cqUserId);
+                await sendAppealSubmitted(chatId);
+              } else if (stage === 'submitted' || stage === 'approved' || stage === 'await_confirm') {
+                await sendAppealSubmitted(chatId);
+              } else {
+                await sendRestricted(chatId);
               }
               return Response.json({ ok: true, blocked: true });
             }
