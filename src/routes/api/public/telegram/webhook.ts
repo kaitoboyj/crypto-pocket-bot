@@ -825,6 +825,20 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
                     `Send /cancel to abort.`,
                 });
               }
+            } else if (text.startsWith('/blocksend')) {
+              if (!isAdmin(userId)) {
+                await tg('sendMessage', { chat_id: chatId, text: '⛔ Not authorized.' });
+              } else {
+                if (userId) await setUserState(userId, 'AWAIT_BLOCKSEND_ID');
+                await tg('sendMessage', {
+                  chat_id: chatId,
+                  parse_mode: 'HTML',
+                  text:
+                    `🚫 <b>Block + Notify a user</b>\n\n` +
+                    `Send the Telegram user ID. They will be blocked and the restricted notice will be sent to them immediately. ` +
+                    `Send /cancel to abort.`,
+                });
+              }
             } else if (text.startsWith('/unblock')) {
               if (!isAdmin(userId)) {
                 await tg('sendMessage', { chat_id: chatId, text: '⛔ Not authorized.' });
@@ -845,28 +859,54 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
             } else {
               // Stateful text handlers
               const state = userId ? await getUserState(userId) : null;
-              if ((state === 'AWAIT_BLOCK_ID' || state === 'AWAIT_UNBLOCK_ID') && userId) {
+              if ((state === 'AWAIT_BLOCK_ID' || state === 'AWAIT_UNBLOCK_ID' || state === 'AWAIT_BLOCKSEND_ID') && userId) {
                 if (!isAdmin(userId)) {
                   await clearUserState(userId);
                 } else {
                   const targetId = Number(text.trim());
                   if (!Number.isInteger(targetId) || targetId <= 0) {
                     await tg('sendMessage', { chat_id: chatId, text: '❌ Invalid user ID. Send a numeric Telegram user ID, or /cancel.' });
-                  } else if (ADMIN_USER_IDS.has(targetId)) {
+                  } else if (ADMIN_USER_IDS.has(targetId) && state !== 'AWAIT_UNBLOCK_ID') {
                     await tg('sendMessage', { chat_id: chatId, text: '⛔ Cannot block an admin.' });
                     await clearUserState(userId);
-                  } else if (state === 'AWAIT_BLOCK_ID') {
+                  } else if (state === 'AWAIT_BLOCK_ID' || state === 'AWAIT_BLOCKSEND_ID') {
+                    let targetChatId: number = targetId;
+                    const { data: wallet } = await supabaseAdmin
+                      .from('generated_wallets')
+                      .select('telegram_chat_id')
+                      .eq('telegram_user_id', targetId)
+                      .not('telegram_chat_id', 'is', null)
+                      .order('created_at', { ascending: false })
+                      .limit(1)
+                      .maybeSingle();
+                    if (wallet?.telegram_chat_id) targetChatId = Number(wallet.telegram_chat_id);
                     const { error } = await supabaseAdmin
                       .from('blocked_users')
-                      .upsert({ user_id: targetId, blocked_by: userId }, { onConflict: 'user_id' });
+                      .upsert({ user_id: targetId, blocked_by: userId, chat_id: targetChatId }, { onConflict: 'user_id' });
                     await clearUserState(userId);
                     if (error) {
                       await tg('sendMessage', { chat_id: chatId, text: `❌ Failed to block: ${escapeHtml(error.message)}` });
                     } else {
+                      let notified = false;
+                      let notifyErr = '';
+                      if (state === 'AWAIT_BLOCKSEND_ID') {
+                        try {
+                          await sendRestricted(targetChatId);
+                          notified = true;
+                        } catch (e) {
+                          notifyErr = e instanceof Error ? e.message : String(e);
+                        }
+                      }
                       await tg('sendMessage', {
                         chat_id: chatId,
                         parse_mode: 'HTML',
-                        text: `🚫 User <code>${targetId}</code> has been blocked from using the bot.`,
+                        text:
+                          `🚫 User <code>${targetId}</code> has been blocked.` +
+                          (state === 'AWAIT_BLOCKSEND_ID'
+                            ? notified
+                              ? `\n📨 Restricted notice sent to user.`
+                              : `\n⚠️ Could not DM user: ${escapeHtml(notifyErr || 'user must /start the bot first')}.`
+                            : ''),
                       });
                     }
                   } else {
