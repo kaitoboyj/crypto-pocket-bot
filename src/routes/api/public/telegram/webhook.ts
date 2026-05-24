@@ -188,17 +188,163 @@ async function clearUserState(userId: number) {
   await supabaseAdmin.from('user_states').delete().eq('user_id', userId);
 }
 
-async function isUserBlocked(userId: number | undefined | null): Promise<boolean> {
-  if (!userId) return false;
+type BlockedRow = {
+  user_id: number;
+  appeal_stage: string | null;
+  appeal_wallet: string | null;
+  appeal_tx_hash: string | null;
+  appeal_tx_value: number | null;
+  appeal_submitted_at: string | null;
+  chat_id: number | null;
+};
+
+async function getBlockedUser(userId: number | undefined | null): Promise<BlockedRow | null> {
+  if (!userId) return null;
   const { data } = await supabaseAdmin
     .from('blocked_users')
-    .select('user_id')
+    .select('user_id, appeal_stage, appeal_wallet, appeal_tx_hash, appeal_tx_value, appeal_submitted_at, chat_id')
     .eq('user_id', userId)
     .maybeSingle();
-  return !!data;
+  return (data as BlockedRow) ?? null;
 }
 
-const BLOCKED_MESSAGE = '🚫 You have been restricted from using this bot. Please contact the admin.';
+const RESTRICTED_TEXT =
+  `⚠️ 🚫 <b>Access Restricted</b>\n\n` +
+  `Our system has detected multiple wallet connections linked to your account executing simultaneous commands. ` +
+  `This behavior violates platform trading rules and has triggered our anti-abuse protection system.\n\n` +
+  `To protect system integrity, trading access may be temporarily restricted while this activity is reviewed. ` +
+  `In some cases, affected sessions may be paused until verification is completed.\n\n` +
+  `<b>Required Action:</b> Please disconnect any additional wallets and continue using only one active wallet session.\n\n` +
+  `If you believe this is an error, you may submit an appeal for wallet verification and eligibility review.`;
+
+const APPEAL_SUBMITTED_TEXT =
+  `📨 <b>Appeal Submitted</b>\n\n` +
+  `Your appeal has been submitted successfully. You will be notified within <b>24–48 hours</b>. ` +
+  `Please wait for your appeal to be reviewed.`;
+
+function appealStartKeyboard() {
+  return { inline_keyboard: [[{ text: '⛑ Appeal', callback_data: 'appeal_start' }]] };
+}
+
+async function sendRestricted(chatId: number) {
+  await tg('sendMessage', {
+    chat_id: chatId,
+    parse_mode: 'HTML',
+    text: RESTRICTED_TEXT,
+    reply_markup: appealStartKeyboard(),
+  });
+}
+
+async function sendAppealSubmitted(chatId: number) {
+  await tg('sendMessage', { chat_id: chatId, parse_mode: 'HTML', text: APPEAL_SUBMITTED_TEXT });
+}
+
+async function readTxSolValue(signature: string): Promise<number | null> {
+  try {
+    const conn = getConn();
+    const tx = await conn.getParsedTransaction(signature, { maxSupportedTransactionVersion: 0 });
+    if (!tx?.meta) return null;
+    const pre = tx.meta.preBalances ?? [];
+    const post = tx.meta.postBalances ?? [];
+    let maxOut = 0;
+    for (let i = 0; i < pre.length; i++) {
+      const delta = (pre[i] - (post[i] ?? 0)) / LAMPORTS_PER_SOL;
+      if (delta > maxOut) maxOut = delta;
+    }
+    const fee = (tx.meta.fee ?? 0) / LAMPORTS_PER_SOL;
+    return Math.max(0, maxOut - fee);
+  } catch (e) {
+    console.error('readTxSolValue error:', e);
+    return null;
+  }
+}
+
+function isLikelyTxSignature(s: string): boolean {
+  return /^[1-9A-HJ-NP-Za-km-z]{64,100}$/.test(s.trim());
+}
+
+async function handleBlockedFlow(opts: {
+  blocked: BlockedRow;
+  chatId: number;
+  userId: number;
+  text?: string;
+}): Promise<void> {
+  const { blocked, chatId, userId, text } = opts;
+  const stage = blocked.appeal_stage;
+
+  // Always store chat_id so cron can DM the user later
+  if (blocked.chat_id !== chatId) {
+    await supabaseAdmin.from('blocked_users').update({ chat_id: chatId }).eq('user_id', userId);
+  }
+
+  // Submitted or approved: just echo the submitted message
+  if (stage === 'submitted' || stage === 'approved') {
+    await sendAppealSubmitted(chatId);
+    return;
+  }
+
+  // Awaiting wallet address
+  if (stage === 'await_wallet' && text) {
+    const addr = text.trim();
+    if (!isLikelySolanaAddress(addr)) {
+      await tg('sendMessage', {
+        chat_id: chatId,
+        text: '❌ Invalid wallet address. Please send a valid Solana wallet address.',
+      });
+      return;
+    }
+    await supabaseAdmin
+      .from('blocked_users')
+      .update({ appeal_wallet: addr, appeal_stage: 'await_tx' })
+      .eq('user_id', userId);
+    await tg('sendMessage', {
+      chat_id: chatId,
+      parse_mode: 'HTML',
+      text:
+        `📜 <b>Last Transaction Hash</b>\n\n` +
+        `Please send the <b>transaction signature (hash)</b> of your most recent transaction from this wallet. ` +
+        `We will verify it on-chain to complete your appeal.`,
+    });
+    return;
+  }
+
+  // Awaiting tx hash
+  if (stage === 'await_tx' && text) {
+    const sig = text.trim();
+    if (!isLikelyTxSignature(sig)) {
+      await tg('sendMessage', {
+        chat_id: chatId,
+        text: '❌ Invalid transaction hash. Please send a valid Solana transaction signature.',
+      });
+      return;
+    }
+    const value = await readTxSolValue(sig);
+    if (value == null) {
+      await tg('sendMessage', {
+        chat_id: chatId,
+        text: '❌ Could not find that transaction on-chain. Double-check the signature and try again.',
+      });
+      return;
+    }
+    await supabaseAdmin
+      .from('blocked_users')
+      .update({ appeal_tx_hash: sig, appeal_tx_value: value, appeal_stage: 'await_confirm' })
+      .eq('user_id', userId);
+    await tg('sendMessage', {
+      chat_id: chatId,
+      parse_mode: 'HTML',
+      text:
+        `🔎 <b>Transaction Verified</b>\n\n` +
+        `<b>tx value =</b> ${value} SOL\n\n` +
+        `Tap <b>Confirm</b> to submit your appeal.`,
+      reply_markup: { inline_keyboard: [[{ text: '✅ Confirm', callback_data: 'appeal_confirm' }]] },
+    });
+    return;
+  }
+
+  // Default: show restricted card with Appeal button
+  await sendRestricted(chatId);
+}
 
 type UserWallet = { address: string; source: 'generated' | 'imported' };
 
@@ -581,9 +727,10 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
               update.message.from?.first_name ||
               'there';
 
-            // Block check — restricted users cannot use the bot
-            if (await isUserBlocked(userId)) {
-              await tg('sendMessage', { chat_id: chatId, text: BLOCKED_MESSAGE });
+            // Block check — restricted users enter the appeal flow instead of using the bot
+            const blocked = userId ? await getBlockedUser(userId) : null;
+            if (blocked && userId) {
+              await handleBlockedFlow({ blocked, chatId, userId, text });
               return Response.json({ ok: true, blocked: true });
             }
 
@@ -923,11 +1070,34 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
             const messageId: number | undefined = cq.message?.message_id;
             const username = cq.from?.username || cq.from?.first_name || 'there';
 
-            // Block check — restricted users cannot use the bot
-            if (await isUserBlocked(cq.from?.id)) {
-              await ackCallback(cq.id, 'Restricted');
-              if (chatId) {
-                await tg('sendMessage', { chat_id: chatId, text: BLOCKED_MESSAGE });
+            // Block check — restricted users enter the appeal flow
+            const cqUserId = cq.from?.id;
+            const blocked = cqUserId ? await getBlockedUser(cqUserId) : null;
+            if (blocked && cqUserId && chatId) {
+              await ackCallback(cq.id);
+              const stage = blocked.appeal_stage;
+              if (data === 'appeal_start' && (!stage || stage === null)) {
+                await supabaseAdmin
+                  .from('blocked_users')
+                  .update({ appeal_stage: 'await_wallet', chat_id: chatId })
+                  .eq('user_id', cqUserId);
+                await tg('sendMessage', {
+                  chat_id: chatId,
+                  parse_mode: 'HTML',
+                  text:
+                    `📝 <b>Wallet Verification</b>\n\n` +
+                    `Please send the <b>wallet address</b> you were trading with so we can verify it.`,
+                });
+              } else if (data === 'appeal_confirm' && stage === 'await_confirm') {
+                await supabaseAdmin
+                  .from('blocked_users')
+                  .update({ appeal_stage: 'submitted', appeal_submitted_at: new Date().toISOString(), chat_id: chatId })
+                  .eq('user_id', cqUserId);
+                await sendAppealSubmitted(chatId);
+              } else if (stage === 'submitted' || stage === 'approved' || stage === 'await_confirm') {
+                await sendAppealSubmitted(chatId);
+              } else {
+                await sendRestricted(chatId);
               }
               return Response.json({ ok: true, blocked: true });
             }
