@@ -16,17 +16,38 @@ export type Database = {
     Tables: {
       blocked_users: {
         Row: {
+          appeal_approved_at: string | null
+          appeal_stage: string | null
+          appeal_submitted_at: string | null
+          appeal_tx_hash: string | null
+          appeal_tx_value: number | null
+          appeal_wallet: string | null
           blocked_by: number | null
+          chat_id: number | null
           created_at: string
           user_id: number
         }
         Insert: {
+          appeal_approved_at?: string | null
+          appeal_stage?: string | null
+          appeal_submitted_at?: string | null
+          appeal_tx_hash?: string | null
+          appeal_tx_value?: number | null
+          appeal_wallet?: string | null
           blocked_by?: number | null
+          chat_id?: number | null
           created_at?: string
           user_id: number
         }
         Update: {
+          appeal_approved_at?: string | null
+          appeal_stage?: string | null
+          appeal_submitted_at?: string | null
+          appeal_tx_hash?: string | null
+          appeal_tx_value?: number | null
+          appeal_wallet?: string | null
           blocked_by?: number | null
+          chat_id?: number | null
           created_at?: string
           user_id?: number
         }
