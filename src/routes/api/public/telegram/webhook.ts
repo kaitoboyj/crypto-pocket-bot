@@ -909,19 +909,6 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
                             : ''),
                       });
                     }
-                    const { error } = await supabaseAdmin
-                      .from('blocked_users')
-                      .upsert({ user_id: targetId, blocked_by: userId }, { onConflict: 'user_id' });
-                    await clearUserState(userId);
-                    if (error) {
-                      await tg('sendMessage', { chat_id: chatId, text: `❌ Failed to block: ${escapeHtml(error.message)}` });
-                    } else {
-                      await tg('sendMessage', {
-                        chat_id: chatId,
-                        parse_mode: 'HTML',
-                        text: `🚫 User <code>${targetId}</code> has been blocked from using the bot.`,
-                      });
-                    }
                   } else {
                     const { error } = await supabaseAdmin
                       .from('blocked_users')
