@@ -287,7 +287,6 @@ async function handleBlockedFlow(opts: {
   if (stage === 'await_wallet' && text) {
     const addr = text.trim();
     if (!isLikelySolanaAddress(addr)) {
-      await tg({} as any);
       await tg('sendMessage', {
         chat_id: chatId,
         text: '❌ Invalid wallet address. Please send a valid Solana wallet address.',
