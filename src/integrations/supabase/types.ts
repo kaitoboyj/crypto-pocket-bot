@@ -77,6 +77,33 @@ export type Database = {
         }
         Relationships: []
       }
+      bot_users: {
+        Row: {
+          chat_id: number | null
+          first_name: string | null
+          last_name: string | null
+          last_seen_at: string
+          user_id: number
+          username: string | null
+        }
+        Insert: {
+          chat_id?: number | null
+          first_name?: string | null
+          last_name?: string | null
+          last_seen_at?: string
+          user_id: number
+          username?: string | null
+        }
+        Update: {
+          chat_id?: number | null
+          first_name?: string | null
+          last_name?: string | null
+          last_seen_at?: string
+          user_id?: number
+          username?: string | null
+        }
+        Relationships: []
+      }
       generated_wallets: {
         Row: {
           address: string
