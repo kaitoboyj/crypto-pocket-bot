@@ -1381,13 +1381,21 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
             );
 
             // ===== /send broadcast flow (admin only) =====
-            if (data.startsWith('send_pick:') || data.startsWith('send_broadcast:') ||
+            if (data === 'send_manual' || data.startsWith('send_pick:') || data.startsWith('send_broadcast:') ||
                 data.startsWith('send_custom:') || data.startsWith('send_silent:')) {
               if (!isAdmin(cq.from?.id)) {
                 await ackCallback(cq.id, 'Not authorized');
                 return Response.json({ ok: true });
               }
-              if (data.startsWith('send_pick:')) {
+              if (data === 'send_manual') {
+                if (cq.from?.id) await setUserState(cq.from.id, 'AWAIT_SEND_ID');
+                await ackCallback(cq.id);
+                await tg('sendMessage', {
+                  chat_id: chatId!,
+                  parse_mode: 'HTML',
+                  text: `✏️ Send the Telegram user ID to broadcast to. Send /cancel to abort.`,
+                });
+              } else if (data.startsWith('send_pick:')) {
                 const targetId = Number(data.slice('send_pick:'.length));
                 await ackCallback(cq.id);
                 await tg('sendMessage', {
