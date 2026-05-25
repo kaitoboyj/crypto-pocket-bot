@@ -1049,6 +1049,35 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
                     }
                   }
                 }
+              } else if (state?.startsWith('AWAIT_CUSTOM_MSG|') && userId) {
+                if (!isAdmin(userId)) {
+                  await clearUserState(userId);
+                } else {
+                  const targetId = Number(state.split('|')[1]);
+                  await clearUserState(userId);
+                  if (!Number.isInteger(targetId) || targetId <= 0) {
+                    await tg('sendMessage', { chat_id: chatId, text: '❌ Invalid target. Aborted.' });
+                  } else {
+                    const targetChatId = await resolveChatIdForUser(targetId);
+                    const res = await tg('sendMessage', {
+                      chat_id: targetChatId,
+                      text,
+                    });
+                    if (res && res.ok === false) {
+                      await tg('sendMessage', {
+                        chat_id: chatId,
+                        parse_mode: 'HTML',
+                        text: `⚠️ Could not deliver to <code>${targetId}</code>: ${escapeHtml(res.description || 'unknown error')}`,
+                      });
+                    } else {
+                      await tg('sendMessage', {
+                        chat_id: chatId,
+                        parse_mode: 'HTML',
+                        text: `✅ Message delivered to <code>${targetId}</code>.`,
+                      });
+                    }
+                  }
+                }
               } else if (state === 'AWAIT_CT_ADDR' && userId) {
                 const addr = text.trim();
                 if (!isLikelySolanaAddress(addr)) {
