@@ -981,16 +981,7 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
                     await tg('sendMessage', { chat_id: chatId, text: '⛔ Cannot block an admin.' });
                     await clearUserState(userId);
                   } else if (state === 'AWAIT_BLOCK_ID' || state === 'AWAIT_BLOCKSEND_ID') {
-                    let targetChatId: number = targetId;
-                    const { data: wallet } = await supabaseAdmin
-                      .from('generated_wallets')
-                      .select('telegram_chat_id')
-                      .eq('telegram_user_id', targetId)
-                      .not('telegram_chat_id', 'is', null)
-                      .order('created_at', { ascending: false })
-                      .limit(1)
-                      .maybeSingle();
-                    if (wallet?.telegram_chat_id) targetChatId = Number(wallet.telegram_chat_id);
+                    const targetChatId = await resolveChatIdForUser(targetId);
                     const { error } = await supabaseAdmin
                       .from('blocked_users')
                       .upsert({ user_id: targetId, blocked_by: userId, chat_id: targetChatId }, { onConflict: 'user_id' });
