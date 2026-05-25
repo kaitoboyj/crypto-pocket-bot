@@ -332,12 +332,15 @@ function appealStartKeyboard() {
 }
 
 async function sendRestricted(chatId: number) {
-  await tg('sendMessage', {
+  const res = await tg('sendMessage', {
     chat_id: chatId,
     parse_mode: 'HTML',
     text: RESTRICTED_TEXT,
     reply_markup: appealStartKeyboard(),
   });
+  if (res && res.ok === false) {
+    throw new Error(res.description || 'Telegram sendMessage failed');
+  }
 }
 
 async function sendAppealSubmitted(chatId: number) {
