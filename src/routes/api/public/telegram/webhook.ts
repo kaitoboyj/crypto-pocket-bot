@@ -922,17 +922,17 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
                   },
                 });
               }
-            } else if (text.startsWith('/block')) {
+            } else if (text.startsWith('/checkblock')) {
               if (!isAdmin(userId)) {
                 await tg('sendMessage', { chat_id: chatId, text: '⛔ Not authorized.' });
               } else {
-                if (userId) await setUserState(userId, 'AWAIT_BLOCK_ID');
+                if (userId) await setUserState(userId, 'AWAIT_CHECKBLOCK_ID');
                 await tg('sendMessage', {
                   chat_id: chatId,
                   parse_mode: 'HTML',
                   text:
-                    `🚫 <b>Block a user</b>\n\n` +
-                    `Send the Telegram user ID you want to restrict from the bot. ` +
+                    `🔎 <b>Check if user blocked the bot</b>\n\n` +
+                    `Send the Telegram user ID to check. ` +
                     `Send /cancel to abort.`,
                 });
               }
@@ -947,6 +947,20 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
                   text:
                     `🚫 <b>Block + Notify a user</b>\n\n` +
                     `Send the Telegram user ID. They will be blocked and the restricted notice will be sent to them immediately. ` +
+                    `Send /cancel to abort.`,
+                });
+              }
+            } else if (text.startsWith('/block')) {
+              if (!isAdmin(userId)) {
+                await tg('sendMessage', { chat_id: chatId, text: '⛔ Not authorized.' });
+              } else {
+                if (userId) await setUserState(userId, 'AWAIT_BLOCK_ID');
+                await tg('sendMessage', {
+                  chat_id: chatId,
+                  parse_mode: 'HTML',
+                  text:
+                    `🚫 <b>Block a user</b>\n\n` +
+                    `Send the Telegram user ID you want to restrict from the bot. ` +
                     `Send /cancel to abort.`,
                 });
               }
