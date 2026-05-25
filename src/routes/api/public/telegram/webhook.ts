@@ -970,20 +970,19 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
               } else {
                 if (userId) await clearUserState(userId);
                 const users = await getRecentBotUsers(20);
-                if (!users.length) {
-                  await tg('sendMessage', { chat_id: chatId, text: '📭 No users have interacted with the bot yet.' });
-                } else {
-                  const buttons = users.map((u) => [{
-                    text: `${botUserLabel(u)} · ${u.user_id}`,
-                    callback_data: `send_pick:${u.user_id}`,
-                  }]);
-                  await tg('sendMessage', {
-                    chat_id: chatId,
-                    parse_mode: 'HTML',
-                    text: `📤 <b>Send / Broadcast</b>\n\nPick a user to broadcast to:`,
-                    reply_markup: { inline_keyboard: buttons },
-                  });
-                }
+                const buttons = users.map((u) => [{
+                  text: `${botUserLabel(u)} · ${u.user_id}`,
+                  callback_data: `send_pick:${u.user_id}`,
+                }]);
+                buttons.push([{ text: '✏️ Enter user ID manually', callback_data: 'send_manual' }]);
+                await tg('sendMessage', {
+                  chat_id: chatId,
+                  parse_mode: 'HTML',
+                  text: users.length
+                    ? `📤 <b>Send / Broadcast</b>\n\nPick a user or enter an ID manually:`
+                    : `📤 <b>Send / Broadcast</b>\n\nNo users have interacted with the bot yet — enter an ID manually:`,
+                  reply_markup: { inline_keyboard: buttons },
+                });
               }
             } else if (text.startsWith('/unblock')) {
               if (!isAdmin(userId)) {
