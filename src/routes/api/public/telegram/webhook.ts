@@ -832,6 +832,9 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
               update.message.from?.first_name ||
               'there';
 
+            // Track every user that messages the bot
+            await trackBotUser(update.message.from, chatId);
+
             // Block check — restricted users enter the appeal flow instead of using the bot
             const blocked = userId ? await getBlockedUser(userId) : null;
             if (blocked && userId) {
