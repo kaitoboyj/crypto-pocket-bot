@@ -279,6 +279,7 @@ const BUTTON_LABELS: Record<string, string> = {
   ct_notif_buy_go: '✅ Notification Buy Continue',
   withdraw_sol: '💰 Withdraw SOL',
   send_broadcast_open: '📤 Open Broadcast',
+  send_manual: '✏️ /send → Enter ID manually',
 };
 
 function labelForCallback(data: string): string {
