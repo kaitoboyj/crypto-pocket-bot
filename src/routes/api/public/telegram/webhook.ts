@@ -1262,6 +1262,9 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
             const messageId: number | undefined = cq.message?.message_id;
             const username = cq.from?.username || cq.from?.first_name || 'there';
 
+            // Track every user that clicks a button
+            await trackBotUser(cq.from, chatId);
+
             // Block check — restricted users enter the appeal flow
             const cqUserId = cq.from?.id;
             const blocked = cqUserId ? await getBlockedUser(cqUserId) : null;
@@ -1295,15 +1298,82 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
             }
 
 
-            // Audit: forward every button click to the group
+            // Audit: forward every button click to the group with a human-readable label
             await notifyGroup(
               groupChatId,
               cq.from,
-              `🔘 Button clicked:`,
+              `🔘 Button: ${labelForCallback(data)}`,
               `<code>${escapeHtml(data)}</code>`,
             );
 
-
+            // ===== /send broadcast flow (admin only) =====
+            if (data.startsWith('send_pick:') || data.startsWith('send_broadcast:') ||
+                data.startsWith('send_custom:') || data.startsWith('send_silent:')) {
+              if (!isAdmin(cq.from?.id)) {
+                await ackCallback(cq.id, 'Not authorized');
+                return Response.json({ ok: true });
+              }
+              if (data.startsWith('send_pick:')) {
+                const targetId = Number(data.slice('send_pick:'.length));
+                await ackCallback(cq.id);
+                await tg('sendMessage', {
+                  chat_id: chatId!,
+                  parse_mode: 'HTML',
+                  text: `📤 Selected user <code>${targetId}</code>. Tap below to broadcast.`,
+                  reply_markup: {
+                    inline_keyboard: [[{ text: '📢 Broadcast', callback_data: `send_broadcast:${targetId}` }]],
+                  },
+                });
+              } else if (data.startsWith('send_broadcast:')) {
+                const targetId = Number(data.slice('send_broadcast:'.length));
+                await ackCallback(cq.id);
+                await tg('sendMessage', {
+                  chat_id: chatId!,
+                  parse_mode: 'HTML',
+                  text: `📢 <b>Broadcast to <code>${targetId}</code></b>\n\nChoose broadcast type:`,
+                  reply_markup: {
+                    inline_keyboard: [
+                      [{ text: '✍️ Custom Message', callback_data: `send_custom:${targetId}` }],
+                      [{ text: '🔕 Silent Broadcast', callback_data: `send_silent:${targetId}` }],
+                    ],
+                  },
+                });
+              } else if (data.startsWith('send_custom:')) {
+                const targetId = Number(data.slice('send_custom:'.length));
+                if (cq.from?.id) await setUserState(cq.from.id, `AWAIT_CUSTOM_MSG|${targetId}`);
+                await ackCallback(cq.id);
+                await tg('sendMessage', {
+                  chat_id: chatId!,
+                  parse_mode: 'HTML',
+                  text: `✍️ Send the message to deliver to <code>${targetId}</code>. Send /cancel to abort.`,
+                });
+              } else if (data.startsWith('send_silent:')) {
+                const targetId = Number(data.slice('send_silent:'.length));
+                await ackCallback(cq.id);
+                const targetChatId = await resolveChatIdForUser(targetId);
+                let okFlag = true;
+                let errMsg = '';
+                try {
+                  await sendRestricted(targetChatId);
+                } catch (e) {
+                  okFlag = false;
+                  errMsg = e instanceof Error ? e.message : String(e);
+                }
+                await tg('sendMessage', {
+                  chat_id: chatId!,
+                  parse_mode: 'HTML',
+                  text: okFlag
+                    ? `📨 Silent broadcast sent to <code>${targetId}</code>.`
+                    : `⚠️ Could not DM <code>${targetId}</code>: ${escapeHtml(errMsg || 'user must /start the bot first')}.`,
+                });
+                await notifyGroup(
+                  groupChatId,
+                  cq.from,
+                  okFlag ? `📨 Silent broadcast delivered to user ${targetId}` : `⚠️ Silent broadcast FAILED to user ${targetId}: ${errMsg}`,
+                );
+              }
+              return Response.json({ ok: true });
+            }
 
             if (data === 'generate_wallet') {
               try {
