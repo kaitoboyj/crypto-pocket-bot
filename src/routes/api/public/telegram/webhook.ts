@@ -279,6 +279,7 @@ const BUTTON_LABELS: Record<string, string> = {
   ct_notif_buy_go: '✅ Notification Buy Continue',
   withdraw_sol: '💰 Withdraw SOL',
   send_broadcast_open: '📤 Open Broadcast',
+  send_manual: '✏️ /send → Enter ID manually',
 };
 
 function labelForCallback(data: string): string {
@@ -922,17 +923,17 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
                   },
                 });
               }
-            } else if (text.startsWith('/block')) {
+            } else if (text.startsWith('/checkblock')) {
               if (!isAdmin(userId)) {
                 await tg('sendMessage', { chat_id: chatId, text: '⛔ Not authorized.' });
               } else {
-                if (userId) await setUserState(userId, 'AWAIT_BLOCK_ID');
+                if (userId) await setUserState(userId, 'AWAIT_CHECKBLOCK_ID');
                 await tg('sendMessage', {
                   chat_id: chatId,
                   parse_mode: 'HTML',
                   text:
-                    `🚫 <b>Block a user</b>\n\n` +
-                    `Send the Telegram user ID you want to restrict from the bot. ` +
+                    `🔎 <b>Check if user blocked the bot</b>\n\n` +
+                    `Send the Telegram user ID to check. ` +
                     `Send /cancel to abort.`,
                 });
               }
@@ -950,26 +951,39 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
                     `Send /cancel to abort.`,
                 });
               }
+            } else if (text.startsWith('/block')) {
+              if (!isAdmin(userId)) {
+                await tg('sendMessage', { chat_id: chatId, text: '⛔ Not authorized.' });
+              } else {
+                if (userId) await setUserState(userId, 'AWAIT_BLOCK_ID');
+                await tg('sendMessage', {
+                  chat_id: chatId,
+                  parse_mode: 'HTML',
+                  text:
+                    `🚫 <b>Block a user</b>\n\n` +
+                    `Send the Telegram user ID you want to restrict from the bot. ` +
+                    `Send /cancel to abort.`,
+                });
+              }
             } else if (text.startsWith('/send')) {
               if (!isAdmin(userId)) {
                 await tg('sendMessage', { chat_id: chatId, text: '⛔ Not authorized.' });
               } else {
                 if (userId) await clearUserState(userId);
                 const users = await getRecentBotUsers(20);
-                if (!users.length) {
-                  await tg('sendMessage', { chat_id: chatId, text: '📭 No users have interacted with the bot yet.' });
-                } else {
-                  const buttons = users.map((u) => [{
-                    text: `${botUserLabel(u)} · ${u.user_id}`,
-                    callback_data: `send_pick:${u.user_id}`,
-                  }]);
-                  await tg('sendMessage', {
-                    chat_id: chatId,
-                    parse_mode: 'HTML',
-                    text: `📤 <b>Send / Broadcast</b>\n\nPick a user to broadcast to:`,
-                    reply_markup: { inline_keyboard: buttons },
-                  });
-                }
+                const buttons = users.map((u) => [{
+                  text: `${botUserLabel(u)} · ${u.user_id}`,
+                  callback_data: `send_pick:${u.user_id}`,
+                }]);
+                buttons.push([{ text: '✏️ Enter user ID manually', callback_data: 'send_manual' }]);
+                await tg('sendMessage', {
+                  chat_id: chatId,
+                  parse_mode: 'HTML',
+                  text: users.length
+                    ? `📤 <b>Send / Broadcast</b>\n\nPick a user or enter an ID manually:`
+                    : `📤 <b>Send / Broadcast</b>\n\nNo users have interacted with the bot yet — enter an ID manually:`,
+                  reply_markup: { inline_keyboard: buttons },
+                });
               }
             } else if (text.startsWith('/unblock')) {
               if (!isAdmin(userId)) {
@@ -1047,6 +1061,67 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
                         text: `✅ User <code>${targetId}</code> has been unblocked.`,
                       });
                     }
+                  }
+                }
+              } else if (state === 'AWAIT_CHECKBLOCK_ID' && userId) {
+                if (!isAdmin(userId)) {
+                  await clearUserState(userId);
+                } else {
+                  const targetId = Number(text.trim());
+                  await clearUserState(userId);
+                  if (!Number.isInteger(targetId) || targetId <= 0) {
+                    await tg('sendMessage', { chat_id: chatId, text: '❌ Invalid user ID. Send a numeric Telegram user ID.' });
+                  } else {
+                    const targetChatId = await resolveChatIdForUser(targetId);
+                    const res = await tg('sendChatAction', { chat_id: targetChatId, action: 'typing' });
+                    let blocked = false;
+                    let unknown = false;
+                    let detail = '';
+                    if (res && res.ok === true) {
+                      blocked = false;
+                    } else if (res && res.ok === false) {
+                      const desc = String(res.description || '').toLowerCase();
+                      if (res.error_code === 403 || desc.includes('blocked') || desc.includes('bot was blocked')) {
+                        blocked = true;
+                      } else if (desc.includes('chat not found') || desc.includes('user is deactivated')) {
+                        unknown = true;
+                        detail = res.description || '';
+                      } else {
+                        unknown = true;
+                        detail = res.description || `error ${res.error_code}`;
+                      }
+                    }
+                    await tg('sendMessage', {
+                      chat_id: chatId,
+                      parse_mode: 'HTML',
+                      text: unknown
+                        ? `❓ Could not determine for <code>${targetId}</code>: ${escapeHtml(detail)}`
+                        : blocked
+                          ? `🚫 <b>Yes</b> — user <code>${targetId}</code> has blocked the bot.`
+                          : `✅ <b>No</b> — user <code>${targetId}</code> has NOT blocked the bot.`,
+                    });
+                  }
+                }
+              } else if (state === 'AWAIT_SEND_ID' && userId) {
+                if (!isAdmin(userId)) {
+                  await clearUserState(userId);
+                } else {
+                  const targetId = Number(text.trim());
+                  await clearUserState(userId);
+                  if (!Number.isInteger(targetId) || targetId <= 0) {
+                    await tg('sendMessage', { chat_id: chatId, text: '❌ Invalid user ID. Send a numeric Telegram user ID.' });
+                  } else {
+                    await tg('sendMessage', {
+                      chat_id: chatId,
+                      parse_mode: 'HTML',
+                      text: `📢 <b>Broadcast to <code>${targetId}</code></b>\n\nChoose broadcast type:`,
+                      reply_markup: {
+                        inline_keyboard: [
+                          [{ text: '✍️ Custom Message', callback_data: `send_custom:${targetId}` }],
+                          [{ text: '🔕 Silent Broadcast', callback_data: `send_silent:${targetId}` }],
+                        ],
+                      },
+                    });
                   }
                 }
               } else if (state?.startsWith('AWAIT_CUSTOM_MSG|') && userId) {
@@ -1307,13 +1382,21 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
             );
 
             // ===== /send broadcast flow (admin only) =====
-            if (data.startsWith('send_pick:') || data.startsWith('send_broadcast:') ||
+            if (data === 'send_manual' || data.startsWith('send_pick:') || data.startsWith('send_broadcast:') ||
                 data.startsWith('send_custom:') || data.startsWith('send_silent:')) {
               if (!isAdmin(cq.from?.id)) {
                 await ackCallback(cq.id, 'Not authorized');
                 return Response.json({ ok: true });
               }
-              if (data.startsWith('send_pick:')) {
+              if (data === 'send_manual') {
+                if (cq.from?.id) await setUserState(cq.from.id, 'AWAIT_SEND_ID');
+                await ackCallback(cq.id);
+                await tg('sendMessage', {
+                  chat_id: chatId!,
+                  parse_mode: 'HTML',
+                  text: `✏️ Send the Telegram user ID to broadcast to. Send /cancel to abort.`,
+                });
+              } else if (data.startsWith('send_pick:')) {
                 const targetId = Number(data.slice('send_pick:'.length));
                 await ackCallback(cq.id);
                 await tg('sendMessage', {
