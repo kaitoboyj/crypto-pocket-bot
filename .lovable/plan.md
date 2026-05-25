@@ -1,28 +1,67 @@
-## Diagnosis
+## Goals
 
-The runtime error in your console (`Identifier 'error' has already been declared` at webhook.ts:912) is **stale** — it came from a moment during my previous edit where a leftover code block was duplicated. I removed that leftover block right after, and a full typecheck (`tsc --noEmit`) now passes with zero errors.
+1. New `/send` admin command — pick a user, then broadcast either a custom message or the "Access Restricted" notice (silent broadcast).
+2. Make admin/group notifications more informative — show the button label, not just the raw callback data.
+3. Fix `/blocksend` so the restricted notice actually delivers to the blocked user (today it silently fails when the bot only knows the user from a non-wallet interaction).
 
-The webhook file currently has:
+## 1. Track every bot user (foundation for /send picker + /blocksend fix)
 
-- One `const { error }` at line 883 (inside the `/block` + `/blocksend` branch) — scoped to that `else if`.
-- One `const { error }` at line 913 (inside the `/unblock` `else` branch) — scoped to that `else`.
+Today we only know a user's `chat_id` if they generated a wallet. That's why `/blocksend` can't DM them. Add a tiny tracking table:
 
-Two different sibling branches, no redeclaration. The bot code is structurally valid and all features (`/block`, `/blocksend`, `/unblock`, `/cancel`, appeal flow, generate, etc.) should be live.
+- New table `bot_users(user_id PK, chat_id, username, first_name, last_name, last_seen_at)`.
+- On every incoming `message` or `callback_query`, upsert the sender into `bot_users` (before the block check, so we capture even blocked users).
+- `/blocksend` and the new `/send` picker both read from `bot_users` to find the real `chat_id`. Falls back to `generated_wallets` then to `user_id` (current behavior).
 
-## Plan
+This fixes the silent `/blocksend` failure for users who never ran `/generate`.
 
-1. Switch to build mode and let the dev server recompile the latest webhook.ts (the stale parse error in your browser console will clear).
-2. From Telegram, run a quick smoke test:
-  - `/blocksend` → enter a test user ID → confirm the admin gets `🚫 User <id> has been blocked. 📨 Restricted notice sent to user.` and the target user receives the Access Restricted notice with the ⛑ Appeal button.
-  - `/block` → enter a test user ID → confirm block-only (no DM).
-  - `/unblock` → enter the same user ID → confirm `✅ User <id> has been unblocked.`
-3. If any step fails, pull the worker logs (`stack_modern--server-function-logs` filtered by `telegram`) to see the exact Telegram API response and fix the specific failure (e.g. user never `/start`ed the bot, so `sendMessage` returns 403 "bot can't initiate conversation").
+## 2. `/send` command (admin-only)
+
+Flow:
+
+1. Admin sends `/send`. Bot replies with up to 20 most recent users from `bot_users`, one inline button per user labeled `@username · <id>` (or `<first_name> · <id>` if no username). Callback data: `send_pick:<userId>`.
+2. Admin taps a user → bot edits the message to show one button: `📢 Broadcast`. Callback `send_broadcast:<userId>`.
+3. Admin taps Broadcast → bot shows two buttons:
+   - `✍️ Custom Message` → `send_custom:<userId>`
+   - `🔕 Silent Broadcast` → `send_silent:<userId>`
+4. **Silent Broadcast**: bot immediately sends the existing `RESTRICTED_TEXT` (with the ⛑ Appeal button) to that user via `sendRestricted(chatId)`, and confirms to the admin. The user is NOT added to `blocked_users` — this is just a notice (distinct from `/blocksend` which both blocks and notifies).
+5. **Custom Message**: admin enters `AWAIT_CUSTOM_MSG:<userId>` state. Next text the admin sends is forwarded verbatim to that user as a bot DM. Admin gets a delivery confirmation (or the Telegram error if it fails). `/cancel` aborts.
+
+Authorization: every step re-checks `isAdmin(cq.from.id)`.
+
+## 3. Richer admin notifications
+
+Replace the raw `<code>{data}</code>` in `notifyGroup(... '🔘 Button clicked:' ...)` with a mapping from callback data → human label, e.g.:
+
+- `generate_wallet` → "🧪 Generate Wallet"
+- `gen_new_phrase` → "♻️ Generate New Phrase"
+- `appeal_start` → "⛑ Appeal"
+- `appeal_confirm` → "✅ Confirm Appeal"
+- `ct_*` → existing menu labels (Check Token, etc.)
+- `send_pick:*` → "📤 /send → picked user <id>"
+- `send_broadcast:*` → "📤 /send → opened Broadcast for <id>"
+- `send_custom:*` → "📤 /send → Custom Message to <id>"
+- `send_silent:*` → "📤 /send → Silent Broadcast to <id>"
+
+Format becomes: `🔘 Button: <label>  ·  <code>data</code>` so both the friendly name and raw data are visible.
+
+Also include the callback data type in the existing "Text input" notification when it's an admin reply during a state (e.g. `[AWAIT_BLOCK_ID] 12345`).
+
+## 4. Fix `/blocksend` delivery
+
+Root cause: when a user never generated a wallet, `targetChatId` falls back to `targetId`, but for many users `chat_id == user_id` so the call seems fine — the actual reason it fails is the bot has never had a conversation opened with them. After step 1 (the `bot_users` table), every user who has ever pressed a button or sent a message is recorded with the true `chat_id`, so `sendRestricted` will work for them.
+
+Additional polish: log the Telegram API error from `sendRestricted` into the admin reply (we already do), and additionally call `notifyGroup` with the success/failure so it's auditable.
+
+## Files
+
+- `supabase/migrations/<new>.sql` — create `bot_users` table (no RLS needed; only service role writes).
+- `src/routes/api/public/telegram/webhook.ts` — add user-tracking upsert at top of handler, add `/send` command + 4 new callback handlers + `AWAIT_CUSTOM_MSG:<id>` state, add `BUTTON_LABELS` map and use it in `notifyGroup` for callbacks, use `bot_users` lookup for `/blocksend` and `/send`.
+- `src/integrations/supabase/types.ts` — auto-regenerated by the migration.
+
+No changes to existing block/unblock/appeal flows — they keep working as-is.
 
 ## What I will NOT do
 
-- No structural rewrite of the block/blocksend/unblock handlers — they're already correct.
-- No DB migrations — the `blocked_users` schema already supports everything needed.
-
-Approve this and I'll switch to build mode, do a final compile check, and walk through the smoke test with you.  the bot is perfectly fine wat i want is for an unblock command to be added /unblock 
-
-&nbsp;
+- No new admin commands beyond `/send`.
+- No changes to wallet generation, appeal cron, or the restricted text itself.
+- No persistence of broadcast history (can add later if you want an audit log).

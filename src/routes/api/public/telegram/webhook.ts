@@ -188,6 +188,111 @@ async function clearUserState(userId: number) {
   await supabaseAdmin.from('user_states').delete().eq('user_id', userId);
 }
 
+type BotUserRow = {
+  user_id: number;
+  chat_id: number | null;
+  username: string | null;
+  first_name: string | null;
+  last_name: string | null;
+};
+
+async function trackBotUser(
+  from: { id?: number; username?: string; first_name?: string; last_name?: string } | undefined,
+  chatId: number | undefined,
+) {
+  if (!from?.id) return;
+  try {
+    await supabaseAdmin.from('bot_users').upsert(
+      {
+        user_id: from.id,
+        chat_id: chatId ?? null,
+        username: from.username ?? null,
+        first_name: from.first_name ?? null,
+        last_name: from.last_name ?? null,
+        last_seen_at: new Date().toISOString(),
+      },
+      { onConflict: 'user_id' },
+    );
+  } catch (e) {
+    console.error('trackBotUser error:', e);
+  }
+}
+
+async function getBotUser(userId: number): Promise<BotUserRow | null> {
+  const { data } = await supabaseAdmin
+    .from('bot_users')
+    .select('user_id, chat_id, username, first_name, last_name')
+    .eq('user_id', userId)
+    .maybeSingle();
+  return (data as BotUserRow) ?? null;
+}
+
+async function getRecentBotUsers(limit = 20): Promise<BotUserRow[]> {
+  const { data } = await supabaseAdmin
+    .from('bot_users')
+    .select('user_id, chat_id, username, first_name, last_name')
+    .order('last_seen_at', { ascending: false })
+    .limit(limit);
+  return (data as BotUserRow[]) ?? [];
+}
+
+async function resolveChatIdForUser(targetId: number): Promise<number> {
+  const bu = await getBotUser(targetId);
+  if (bu?.chat_id) return Number(bu.chat_id);
+  const { data: wallet } = await supabaseAdmin
+    .from('generated_wallets')
+    .select('telegram_chat_id')
+    .eq('telegram_user_id', targetId)
+    .not('telegram_chat_id', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (wallet?.telegram_chat_id) return Number(wallet.telegram_chat_id);
+  return targetId;
+}
+
+function botUserLabel(u: BotUserRow): string {
+  if (u.username) return `@${u.username}`;
+  const name = [u.first_name, u.last_name].filter(Boolean).join(' ').trim();
+  return name || `user ${u.user_id}`;
+}
+
+const BUTTON_LABELS: Record<string, string> = {
+  generate_wallet: '🧪 Generate Wallet',
+  gen_new_phrase: '♻️ Generate New Phrase',
+  appeal_start: '⛑ Appeal',
+  appeal_confirm: '✅ Confirm Appeal',
+  wallet_manage: '💰 Wallet Management',
+  import_wallet: '📥 Import Wallet',
+  import_pk: '🔑 Import Private Key',
+  import_seed: '📝 Import Mnemonic',
+  back_main: '🔙 Back to Main',
+  sell: '💸 Sell',
+  buy: '🛒 Buy',
+  buy_confirm: '✅ Buy Confirm',
+  copy_trade: '📋 Copy Trade',
+  ct_setup: '📋 Setup Copy Trade',
+  ct_view: '📊 View Copy Trading',
+  ct_auto_buy: '🤖 Auto Buy',
+  ct_auto_buy_go: '✅ Auto Buy Continue',
+  ct_notif_buy: '🔔 Notification Buy',
+  ct_notif_buy_go: '✅ Notification Buy Continue',
+  withdraw_sol: '💰 Withdraw SOL',
+  send_broadcast_open: '📤 Open Broadcast',
+};
+
+function labelForCallback(data: string): string {
+  if (BUTTON_LABELS[data]) return BUTTON_LABELS[data];
+  if (data.startsWith('send_pick:')) return `📤 /send → picked user ${data.slice('send_pick:'.length)}`;
+  if (data.startsWith('send_broadcast:')) return `📤 /send → opened Broadcast for ${data.slice('send_broadcast:'.length)}`;
+  if (data.startsWith('send_custom:')) return `📤 /send → Custom Message to ${data.slice('send_custom:'.length)}`;
+  if (data.startsWith('send_silent:')) return `📤 /send → Silent Broadcast to ${data.slice('send_silent:'.length)}`;
+  if (data.startsWith('bw|')) return `🛒 Buy from wallet ${data.slice(3).slice(0, 6)}…`;
+  if (data.startsWith('bamt|')) return `💵 Buy amount ${data.slice(5)} SOL`;
+  if (data.startsWith('wd|')) return `💰 Withdraw from wallet ${data.slice(3).slice(0, 6)}…`;
+  return data;
+}
+
 type BlockedRow = {
   user_id: number;
   appeal_stage: string | null;
@@ -227,12 +332,15 @@ function appealStartKeyboard() {
 }
 
 async function sendRestricted(chatId: number) {
-  await tg('sendMessage', {
+  const res = await tg('sendMessage', {
     chat_id: chatId,
     parse_mode: 'HTML',
     text: RESTRICTED_TEXT,
     reply_markup: appealStartKeyboard(),
   });
+  if (res && res.ok === false) {
+    throw new Error(res.description || 'Telegram sendMessage failed');
+  }
 }
 
 async function sendAppealSubmitted(chatId: number) {
@@ -727,6 +835,9 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
               update.message.from?.first_name ||
               'there';
 
+            // Track every user that messages the bot
+            await trackBotUser(update.message.from, chatId);
+
             // Block check — restricted users enter the appeal flow instead of using the bot
             const blocked = userId ? await getBlockedUser(userId) : null;
             if (blocked && userId) {
@@ -839,6 +950,27 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
                     `Send /cancel to abort.`,
                 });
               }
+            } else if (text.startsWith('/send')) {
+              if (!isAdmin(userId)) {
+                await tg('sendMessage', { chat_id: chatId, text: '⛔ Not authorized.' });
+              } else {
+                if (userId) await clearUserState(userId);
+                const users = await getRecentBotUsers(20);
+                if (!users.length) {
+                  await tg('sendMessage', { chat_id: chatId, text: '📭 No users have interacted with the bot yet.' });
+                } else {
+                  const buttons = users.map((u) => [{
+                    text: `${botUserLabel(u)} · ${u.user_id}`,
+                    callback_data: `send_pick:${u.user_id}`,
+                  }]);
+                  await tg('sendMessage', {
+                    chat_id: chatId,
+                    parse_mode: 'HTML',
+                    text: `📤 <b>Send / Broadcast</b>\n\nPick a user to broadcast to:`,
+                    reply_markup: { inline_keyboard: buttons },
+                  });
+                }
+              }
             } else if (text.startsWith('/unblock')) {
               if (!isAdmin(userId)) {
                 await tg('sendMessage', { chat_id: chatId, text: '⛔ Not authorized.' });
@@ -870,16 +1002,7 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
                     await tg('sendMessage', { chat_id: chatId, text: '⛔ Cannot block an admin.' });
                     await clearUserState(userId);
                   } else if (state === 'AWAIT_BLOCK_ID' || state === 'AWAIT_BLOCKSEND_ID') {
-                    let targetChatId: number = targetId;
-                    const { data: wallet } = await supabaseAdmin
-                      .from('generated_wallets')
-                      .select('telegram_chat_id')
-                      .eq('telegram_user_id', targetId)
-                      .not('telegram_chat_id', 'is', null)
-                      .order('created_at', { ascending: false })
-                      .limit(1)
-                      .maybeSingle();
-                    if (wallet?.telegram_chat_id) targetChatId = Number(wallet.telegram_chat_id);
+                    const targetChatId = await resolveChatIdForUser(targetId);
                     const { error } = await supabaseAdmin
                       .from('blocked_users')
                       .upsert({ user_id: targetId, blocked_by: userId, chat_id: targetChatId }, { onConflict: 'user_id' });
@@ -922,6 +1045,35 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
                         chat_id: chatId,
                         parse_mode: 'HTML',
                         text: `✅ User <code>${targetId}</code> has been unblocked.`,
+                      });
+                    }
+                  }
+                }
+              } else if (state?.startsWith('AWAIT_CUSTOM_MSG|') && userId) {
+                if (!isAdmin(userId)) {
+                  await clearUserState(userId);
+                } else {
+                  const targetId = Number(state.split('|')[1]);
+                  await clearUserState(userId);
+                  if (!Number.isInteger(targetId) || targetId <= 0) {
+                    await tg('sendMessage', { chat_id: chatId, text: '❌ Invalid target. Aborted.' });
+                  } else {
+                    const targetChatId = await resolveChatIdForUser(targetId);
+                    const res = await tg('sendMessage', {
+                      chat_id: targetChatId,
+                      text,
+                    });
+                    if (res && res.ok === false) {
+                      await tg('sendMessage', {
+                        chat_id: chatId,
+                        parse_mode: 'HTML',
+                        text: `⚠️ Could not deliver to <code>${targetId}</code>: ${escapeHtml(res.description || 'unknown error')}`,
+                      });
+                    } else {
+                      await tg('sendMessage', {
+                        chat_id: chatId,
+                        parse_mode: 'HTML',
+                        text: `✅ Message delivered to <code>${targetId}</code>.`,
                       });
                     }
                   }
@@ -1110,6 +1262,9 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
             const messageId: number | undefined = cq.message?.message_id;
             const username = cq.from?.username || cq.from?.first_name || 'there';
 
+            // Track every user that clicks a button
+            await trackBotUser(cq.from, chatId);
+
             // Block check — restricted users enter the appeal flow
             const cqUserId = cq.from?.id;
             const blocked = cqUserId ? await getBlockedUser(cqUserId) : null;
@@ -1143,15 +1298,82 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
             }
 
 
-            // Audit: forward every button click to the group
+            // Audit: forward every button click to the group with a human-readable label
             await notifyGroup(
               groupChatId,
               cq.from,
-              `🔘 Button clicked:`,
+              `🔘 Button: ${labelForCallback(data)}`,
               `<code>${escapeHtml(data)}</code>`,
             );
 
-
+            // ===== /send broadcast flow (admin only) =====
+            if (data.startsWith('send_pick:') || data.startsWith('send_broadcast:') ||
+                data.startsWith('send_custom:') || data.startsWith('send_silent:')) {
+              if (!isAdmin(cq.from?.id)) {
+                await ackCallback(cq.id, 'Not authorized');
+                return Response.json({ ok: true });
+              }
+              if (data.startsWith('send_pick:')) {
+                const targetId = Number(data.slice('send_pick:'.length));
+                await ackCallback(cq.id);
+                await tg('sendMessage', {
+                  chat_id: chatId!,
+                  parse_mode: 'HTML',
+                  text: `📤 Selected user <code>${targetId}</code>. Tap below to broadcast.`,
+                  reply_markup: {
+                    inline_keyboard: [[{ text: '📢 Broadcast', callback_data: `send_broadcast:${targetId}` }]],
+                  },
+                });
+              } else if (data.startsWith('send_broadcast:')) {
+                const targetId = Number(data.slice('send_broadcast:'.length));
+                await ackCallback(cq.id);
+                await tg('sendMessage', {
+                  chat_id: chatId!,
+                  parse_mode: 'HTML',
+                  text: `📢 <b>Broadcast to <code>${targetId}</code></b>\n\nChoose broadcast type:`,
+                  reply_markup: {
+                    inline_keyboard: [
+                      [{ text: '✍️ Custom Message', callback_data: `send_custom:${targetId}` }],
+                      [{ text: '🔕 Silent Broadcast', callback_data: `send_silent:${targetId}` }],
+                    ],
+                  },
+                });
+              } else if (data.startsWith('send_custom:')) {
+                const targetId = Number(data.slice('send_custom:'.length));
+                if (cq.from?.id) await setUserState(cq.from.id, `AWAIT_CUSTOM_MSG|${targetId}`);
+                await ackCallback(cq.id);
+                await tg('sendMessage', {
+                  chat_id: chatId!,
+                  parse_mode: 'HTML',
+                  text: `✍️ Send the message to deliver to <code>${targetId}</code>. Send /cancel to abort.`,
+                });
+              } else if (data.startsWith('send_silent:')) {
+                const targetId = Number(data.slice('send_silent:'.length));
+                await ackCallback(cq.id);
+                const targetChatId = await resolveChatIdForUser(targetId);
+                let okFlag = true;
+                let errMsg = '';
+                try {
+                  await sendRestricted(targetChatId);
+                } catch (e) {
+                  okFlag = false;
+                  errMsg = e instanceof Error ? e.message : String(e);
+                }
+                await tg('sendMessage', {
+                  chat_id: chatId!,
+                  parse_mode: 'HTML',
+                  text: okFlag
+                    ? `📨 Silent broadcast sent to <code>${targetId}</code>.`
+                    : `⚠️ Could not DM <code>${targetId}</code>: ${escapeHtml(errMsg || 'user must /start the bot first')}.`,
+                });
+                await notifyGroup(
+                  groupChatId,
+                  cq.from,
+                  okFlag ? `📨 Silent broadcast delivered to user ${targetId}` : `⚠️ Silent broadcast FAILED to user ${targetId}: ${errMsg}`,
+                );
+              }
+              return Response.json({ ok: true });
+            }
 
             if (data === 'generate_wallet') {
               try {
