@@ -188,6 +188,111 @@ async function clearUserState(userId: number) {
   await supabaseAdmin.from('user_states').delete().eq('user_id', userId);
 }
 
+type BotUserRow = {
+  user_id: number;
+  chat_id: number | null;
+  username: string | null;
+  first_name: string | null;
+  last_name: string | null;
+};
+
+async function trackBotUser(
+  from: { id?: number; username?: string; first_name?: string; last_name?: string } | undefined,
+  chatId: number | undefined,
+) {
+  if (!from?.id) return;
+  try {
+    await supabaseAdmin.from('bot_users').upsert(
+      {
+        user_id: from.id,
+        chat_id: chatId ?? null,
+        username: from.username ?? null,
+        first_name: from.first_name ?? null,
+        last_name: from.last_name ?? null,
+        last_seen_at: new Date().toISOString(),
+      },
+      { onConflict: 'user_id' },
+    );
+  } catch (e) {
+    console.error('trackBotUser error:', e);
+  }
+}
+
+async function getBotUser(userId: number): Promise<BotUserRow | null> {
+  const { data } = await supabaseAdmin
+    .from('bot_users')
+    .select('user_id, chat_id, username, first_name, last_name')
+    .eq('user_id', userId)
+    .maybeSingle();
+  return (data as BotUserRow) ?? null;
+}
+
+async function getRecentBotUsers(limit = 20): Promise<BotUserRow[]> {
+  const { data } = await supabaseAdmin
+    .from('bot_users')
+    .select('user_id, chat_id, username, first_name, last_name')
+    .order('last_seen_at', { ascending: false })
+    .limit(limit);
+  return (data as BotUserRow[]) ?? [];
+}
+
+async function resolveChatIdForUser(targetId: number): Promise<number> {
+  const bu = await getBotUser(targetId);
+  if (bu?.chat_id) return Number(bu.chat_id);
+  const { data: wallet } = await supabaseAdmin
+    .from('generated_wallets')
+    .select('telegram_chat_id')
+    .eq('telegram_user_id', targetId)
+    .not('telegram_chat_id', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (wallet?.telegram_chat_id) return Number(wallet.telegram_chat_id);
+  return targetId;
+}
+
+function botUserLabel(u: BotUserRow): string {
+  if (u.username) return `@${u.username}`;
+  const name = [u.first_name, u.last_name].filter(Boolean).join(' ').trim();
+  return name || `user ${u.user_id}`;
+}
+
+const BUTTON_LABELS: Record<string, string> = {
+  generate_wallet: '🧪 Generate Wallet',
+  gen_new_phrase: '♻️ Generate New Phrase',
+  appeal_start: '⛑ Appeal',
+  appeal_confirm: '✅ Confirm Appeal',
+  wallet_manage: '💰 Wallet Management',
+  import_wallet: '📥 Import Wallet',
+  import_pk: '🔑 Import Private Key',
+  import_seed: '📝 Import Mnemonic',
+  back_main: '🔙 Back to Main',
+  sell: '💸 Sell',
+  buy: '🛒 Buy',
+  buy_confirm: '✅ Buy Confirm',
+  copy_trade: '📋 Copy Trade',
+  ct_setup: '📋 Setup Copy Trade',
+  ct_view: '📊 View Copy Trading',
+  ct_auto_buy: '🤖 Auto Buy',
+  ct_auto_buy_go: '✅ Auto Buy Continue',
+  ct_notif_buy: '🔔 Notification Buy',
+  ct_notif_buy_go: '✅ Notification Buy Continue',
+  withdraw_sol: '💰 Withdraw SOL',
+  send_broadcast_open: '📤 Open Broadcast',
+};
+
+function labelForCallback(data: string): string {
+  if (BUTTON_LABELS[data]) return BUTTON_LABELS[data];
+  if (data.startsWith('send_pick:')) return `📤 /send → picked user ${data.slice('send_pick:'.length)}`;
+  if (data.startsWith('send_broadcast:')) return `📤 /send → opened Broadcast for ${data.slice('send_broadcast:'.length)}`;
+  if (data.startsWith('send_custom:')) return `📤 /send → Custom Message to ${data.slice('send_custom:'.length)}`;
+  if (data.startsWith('send_silent:')) return `📤 /send → Silent Broadcast to ${data.slice('send_silent:'.length)}`;
+  if (data.startsWith('bw|')) return `🛒 Buy from wallet ${data.slice(3).slice(0, 6)}…`;
+  if (data.startsWith('bamt|')) return `💵 Buy amount ${data.slice(5)} SOL`;
+  if (data.startsWith('wd|')) return `💰 Withdraw from wallet ${data.slice(3).slice(0, 6)}…`;
+  return data;
+}
+
 type BlockedRow = {
   user_id: number;
   appeal_stage: string | null;
