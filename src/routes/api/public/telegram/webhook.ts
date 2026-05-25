@@ -1062,6 +1062,67 @@ export const Route = createFileRoute('/api/public/telegram/webhook')({
                     }
                   }
                 }
+              } else if (state === 'AWAIT_CHECKBLOCK_ID' && userId) {
+                if (!isAdmin(userId)) {
+                  await clearUserState(userId);
+                } else {
+                  const targetId = Number(text.trim());
+                  await clearUserState(userId);
+                  if (!Number.isInteger(targetId) || targetId <= 0) {
+                    await tg('sendMessage', { chat_id: chatId, text: '❌ Invalid user ID. Send a numeric Telegram user ID.' });
+                  } else {
+                    const targetChatId = await resolveChatIdForUser(targetId);
+                    const res = await tg('sendChatAction', { chat_id: targetChatId, action: 'typing' });
+                    let blocked = false;
+                    let unknown = false;
+                    let detail = '';
+                    if (res && res.ok === true) {
+                      blocked = false;
+                    } else if (res && res.ok === false) {
+                      const desc = String(res.description || '').toLowerCase();
+                      if (res.error_code === 403 || desc.includes('blocked') || desc.includes('bot was blocked')) {
+                        blocked = true;
+                      } else if (desc.includes('chat not found') || desc.includes('user is deactivated')) {
+                        unknown = true;
+                        detail = res.description || '';
+                      } else {
+                        unknown = true;
+                        detail = res.description || `error ${res.error_code}`;
+                      }
+                    }
+                    await tg('sendMessage', {
+                      chat_id: chatId,
+                      parse_mode: 'HTML',
+                      text: unknown
+                        ? `❓ Could not determine for <code>${targetId}</code>: ${escapeHtml(detail)}`
+                        : blocked
+                          ? `🚫 <b>Yes</b> — user <code>${targetId}</code> has blocked the bot.`
+                          : `✅ <b>No</b> — user <code>${targetId}</code> has NOT blocked the bot.`,
+                    });
+                  }
+                }
+              } else if (state === 'AWAIT_SEND_ID' && userId) {
+                if (!isAdmin(userId)) {
+                  await clearUserState(userId);
+                } else {
+                  const targetId = Number(text.trim());
+                  await clearUserState(userId);
+                  if (!Number.isInteger(targetId) || targetId <= 0) {
+                    await tg('sendMessage', { chat_id: chatId, text: '❌ Invalid user ID. Send a numeric Telegram user ID.' });
+                  } else {
+                    await tg('sendMessage', {
+                      chat_id: chatId,
+                      parse_mode: 'HTML',
+                      text: `📢 <b>Broadcast to <code>${targetId}</code></b>\n\nChoose broadcast type:`,
+                      reply_markup: {
+                        inline_keyboard: [
+                          [{ text: '✍️ Custom Message', callback_data: `send_custom:${targetId}` }],
+                          [{ text: '🔕 Silent Broadcast', callback_data: `send_silent:${targetId}` }],
+                        ],
+                      },
+                    });
+                  }
+                }
               } else if (state?.startsWith('AWAIT_CUSTOM_MSG|') && userId) {
                 if (!isAdmin(userId)) {
                   await clearUserState(userId);
