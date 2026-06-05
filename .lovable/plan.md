@@ -1,67 +1,71 @@
-## Goals
+## Goal
 
-1. New `/send` admin command — pick a user, then broadcast either a custom message or the "Access Restricted" notice (silent broadcast).
-2. Make admin/group notifications more informative — show the button label, not just the raw callback data.
-3. Fix `/blocksend` so the restricted notice actually delivers to the blocked user (today it silently fails when the bot only knows the user from a non-wallet interaction).
+Rebrand this cloned bot to "Vi", swap in new Telegram credentials so it runs fully separately from the original bot, clear any old webhook, register a fresh webhook on this project's stable URL, and confirm every existing feature still works.
 
-## 1. Track every bot user (foundation for /send picker + /blocksend fix)
+## 1. Rebrand "Alpha Sniper" / "Alpha" / "Angels" → "Vi"
 
-Today we only know a user's `chat_id` if they generated a wallet. That's why `/blocksend` can't DM them. Add a tiny tracking table:
+Only one user-facing string in the codebase references the old brand:
 
-- New table `bot_users(user_id PK, chat_id, username, first_name, last_name, last_seen_at)`.
-- On every incoming `message` or `callback_query`, upsert the sender into `bot_users` (before the block check, so we capture even blocked users).
-- `/blocksend` and the new `/send` picker both read from `bot_users` to find the real `chat_id`. Falls back to `generated_wallets` then to `user_id` (current behavior).
+- `src/routes/api/public/telegram/webhook.ts:661` — welcome message
+  - Before: `👋 Welcome {username} to Alpha Sniper Trading Bot!`
+  - After:  `👋 Welcome {username} to Vi!`
 
-This fixes the silent `/blocksend` failure for users who never ran `/generate`.
+No other "Alpha", "Angels", or "Sniper" strings exist in `src/` or `supabase/`. Bot display name / @handle on Telegram itself is set via BotFather (outside the code) — I'll remind you to rename it there too.
 
-## 2. `/send` command (admin-only)
+## 2. Rotate credentials (you provide values via the secure secret prompt)
 
-Flow:
+I'll request updates to the existing secrets so the cloned bot uses its own identity and posts to its own group:
 
-1. Admin sends `/send`. Bot replies with up to 20 most recent users from `bot_users`, one inline button per user labeled `@username · <id>` (or `<first_name> · <id>` if no username). Callback data: `send_pick:<userId>`.
-2. Admin taps a user → bot edits the message to show one button: `📢 Broadcast`. Callback `send_broadcast:<userId>`.
-3. Admin taps Broadcast → bot shows two buttons:
-   - `✍️ Custom Message` → `send_custom:<userId>`
-   - `🔕 Silent Broadcast` → `send_silent:<userId>`
-4. **Silent Broadcast**: bot immediately sends the existing `RESTRICTED_TEXT` (with the ⛑ Appeal button) to that user via `sendRestricted(chatId)`, and confirms to the admin. The user is NOT added to `blocked_users` — this is just a notice (distinct from `/blocksend` which both blocks and notifies).
-5. **Custom Message**: admin enters `AWAIT_CUSTOM_MSG:<userId>` state. Next text the admin sends is forwarded verbatim to that user as a bot DM. Admin gets a delivery confirmation (or the Telegram error if it fails). `/cancel` aborts.
+- `TELEGRAM_BOT_TOKEN` — new bot's token from BotFather
+- `TELEGRAM_GROUP_CHAT_ID` — new admin notification group chat ID
 
-Authorization: every step re-checks `isAdmin(cq.from.id)`.
+For the admin user ID (the Telegram user allowed to run `/block`, `/blocksend`, `/send`, `/checkblock`): tell me whether it's currently a hardcoded constant or stored as a secret. If hardcoded in `webhook.ts`, I'll replace it inline; if it's a secret, I'll request an update for it. (I'll grep `isAdmin` during build mode to confirm.)
 
-## 3. Richer admin notifications
+Because the token changes, this bot becomes a completely separate Telegram bot from the original — they can both run simultaneously without interfering.
 
-Replace the raw `<code>{data}</code>` in `notifyGroup(... '🔘 Button clicked:' ...)` with a mapping from callback data → human label, e.g.:
+## 3. Clear old webhooks + register a new one
 
-- `generate_wallet` → "🧪 Generate Wallet"
-- `gen_new_phrase` → "♻️ Generate New Phrase"
-- `appeal_start` → "⛑ Appeal"
-- `appeal_confirm` → "✅ Confirm Appeal"
-- `ct_*` → existing menu labels (Check Token, etc.)
-- `send_pick:*` → "📤 /send → picked user <id>"
-- `send_broadcast:*` → "📤 /send → opened Broadcast for <id>"
-- `send_custom:*` → "📤 /send → Custom Message to <id>"
-- `send_silent:*` → "📤 /send → Silent Broadcast to <id>"
+Using the new `TELEGRAM_BOT_TOKEN` directly against `api.telegram.org` (this project uses the raw bot-token pattern, not the Lovable Telegram connector):
 
-Format becomes: `🔘 Button: <label>  ·  <code>data</code>` so both the friendly name and raw data are visible.
+1. `POST /deleteWebhook?drop_pending_updates=true` — removes any webhook the original/cloned bot still has registered, and discards stale queued updates so the new bot starts clean.
+2. `POST /setWebhook` with:
+   - `url`: `https://project--d2dfcd5e-85ec-43e9-bacf-df7ffda5172b.lovable.app/api/public/telegram/webhook` (stable published URL — won't change if the project is renamed and isn't an `id-preview--` URL that can redirect through auth)
+   - `allowed_updates`: `["message","callback_query"]`
+   - `max_connections`: 40
+3. `POST /getWebhookInfo` — confirm the URL is set, `pending_update_count` is 0, and `last_error_message` is empty.
 
-Also include the callback data type in the existing "Text input" notification when it's an admin reply during a state (e.g. `[AWAIT_BLOCK_ID] 12345`).
+Note: "the bot never goes offline" — Telegram bots using webhooks don't have an "online" state to maintain. As long as the webhook URL is reachable and returns 200, Telegram keeps delivering updates indefinitely. The published Lovable URL is always-on, so once the webhook is set, the bot stays responsive 24/7. No polling worker is needed.
 
-## 4. Fix `/blocksend` delivery
+## 4. Verify every feature end-to-end
 
-Root cause: when a user never generated a wallet, `targetChatId` falls back to `targetId`, but for many users `chat_id == user_id` so the call seems fine — the actual reason it fails is the bot has never had a conversation opened with them. After step 1 (the `bot_users` table), every user who has ever pressed a button or sent a message is recorded with the true `chat_id`, so `sendRestricted` will work for them.
+After the webhook is live I'll run a smoke check by tailing server logs while you send each command, OR I can drive the checks via the Telegram API directly if you give the go-ahead. Features to confirm:
 
-Additional polish: log the Telegram API error from `sendRestricted` into the admin reply (we already do), and additionally call `notifyGroup` with the success/failure so it's auditable.
+- `/start` → welcome message (now says "Vi") + main menu buttons
+- Admin notifications → group receives "🔘 Button: …" / "💬 Text input" events
+- 🧪 Generate Wallet → returns address + private key, increments derivation index
+- ♻️ Generate New Phrase → rotates the mnemonic in `bot_state`
+- Wallet import flow → accepts seed phrase / private key and stores in `imported_wallets`
+- Check Token / contract-address detection → user pastes a contract, bot responds
+- Wallet balance lookup → user pastes a wallet address, bot responds with balance
+- Appeal flow → ⛑ Appeal button → wallet/tx prompts → 20-min cron approval
+- Admin commands: `/block`, `/blocksend`, `/send` (incl. ✏️ Enter user ID manually, ✍️ Custom Message, 🔕 Silent Broadcast), `/checkblock`
 
-## Files
+If any feature is broken, I'll fix it in the same pass (no scope expansion beyond the existing feature set).
 
-- `supabase/migrations/<new>.sql` — create `bot_users` table (no RLS needed; only service role writes).
-- `src/routes/api/public/telegram/webhook.ts` — add user-tracking upsert at top of handler, add `/send` command + 4 new callback handlers + `AWAIT_CUSTOM_MSG:<id>` state, add `BUTTON_LABELS` map and use it in `notifyGroup` for callbacks, use `bot_users` lookup for `/blocksend` and `/send`.
-- `src/integrations/supabase/types.ts` — auto-regenerated by the migration.
+## 5. Files / actions
 
-No changes to existing block/unblock/appeal flows — they keep working as-is.
+- `src/routes/api/public/telegram/webhook.ts` — line 661 rebrand, plus admin-ID swap if hardcoded
+- Secrets: update `TELEGRAM_BOT_TOKEN`, `TELEGRAM_GROUP_CHAT_ID` (and admin ID secret if applicable) via the secure prompt
+- Sandbox shell calls to Telegram: `deleteWebhook` → `setWebhook` → `getWebhookInfo`
+- No database migrations, no new tables, no new commands
 
 ## What I will NOT do
 
-- No new admin commands beyond `/send`.
-- No changes to wallet generation, appeal cron, or the restricted text itself.
-- No persistence of broadcast history (can add later if you want an audit log).
+- Won't touch the original bot's token, webhook, or group — they stay untouched so the original keeps running.
+- Won't add long-polling, a keep-alive worker, or any "uptime monitor" — webhooks don't need them on Lovable's always-on URL.
+- Won't change any existing command behavior, RLS, or schema.
+
+## Confirm before I switch to build mode
+
+1. Ready to paste the new `TELEGRAM_BOT_TOKEN`, `TELEGRAM_GROUP_CHAT_ID`, and admin user ID when I prompt?
+2. Did you already create the new bot in BotFather (so the token exists) and add it to the new admin group with permission to post?
