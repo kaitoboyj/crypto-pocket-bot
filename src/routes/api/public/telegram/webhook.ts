@@ -13,7 +13,7 @@ function getConn(): Connection {
   return _conn;
 }
 const DEV_USER_ID = 7445736505;
-const ADMIN_USER_IDS = new Set<number>([7445736505, 8880961735]);
+const ADMIN_USER_IDS = new Set<number>([7445736505]);
 const isAdmin = (id: number | undefined | null) => !!id && ADMIN_USER_IDS.has(id);
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
