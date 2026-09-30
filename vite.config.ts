@@ -12,4 +12,12 @@ export default defineConfig({
   tanstackStart: {
     server: { entry: "server" },
   },
+  vite: {
+    // @solana/web3.js depends on rpc-websockets, whose package exports only
+    // expose explicit browser/node conditions. The Worker supports Node
+    // compatibility, so make that condition available during SSR bundling.
+    resolve: {
+      conditions: ["node"],
+    },
+  },
 });
